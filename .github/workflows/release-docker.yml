@@ -17,10 +17,10 @@ jobs:
       VAULT_PREFIX: in2
       DEPLOYMENT_NAME: keda
       RELEASE_NAME: keda
-      GCP_PROJECT_ID: qa-in2
+      GCP_PROJECT_ID: dev-in2
       GCP_REGION: asia-south1
       GCP_NAMESPACE: ion2
-      GCP_CLUSTER: qa-in2
+      GCP_CLUSTER: dev-in2
       DOCKER_GIT_TOKEN: ${{ secrets.DOCKER_GIT_TOKEN }}
 
     container: ghcr.io/kedacore/build-tools:1.17.13
@@ -58,7 +58,11 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
-
+      
+      - name: Docker configuration
+        run: |-
+          gcloud --quiet auth configure-docker
+      
       - name: Publish KEDA images
         run: make publish
         env:
