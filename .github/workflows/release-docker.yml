@@ -44,12 +44,7 @@ jobs:
 
       - name: Get the version
         id: get_version
-        run: echo ::set-output name=VERSION::1
-
-      - name: Release Deployment YAML file
-        run: make release
-        env:
-          VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: ./version.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
