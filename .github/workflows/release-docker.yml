@@ -47,7 +47,7 @@ jobs:
 
       - name: Get the version
         id: get_version
-        run: ./version.sh
+        run: echo ::set-output name=VERSION::$(./version.sh)
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
