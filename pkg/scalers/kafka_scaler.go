@@ -82,7 +82,7 @@ const (
 	invalidOffset                      = -1
 )
 
-var totCount int = 0
+var totCount int = 100
 
 // NewKafkaScaler creates a new kafkaScaler
 func NewKafkaScaler(config *ScalerConfig) (Scaler, error) {
