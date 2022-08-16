@@ -82,6 +82,8 @@ const (
 	invalidOffset                      = -1
 )
 
+var totCount int = 0
+
 // NewKafkaScaler creates a new kafkaScaler
 func NewKafkaScaler(config *ScalerConfig) (Scaler, error) {
 	metricType, err := GetMetricTargetType(config)
@@ -383,6 +385,11 @@ func (s *kafkaScaler) getConsumerOffsets(topicPartitions map[string][]int32) (*s
 }
 
 func (s *kafkaScaler) getLagForPartition(topic string, partitionID int32, offsets *sarama.OffsetFetchResponse, topicPartitionOffsets map[string]map[int32]int64) (int64, error) {
+	totCount--
+	s.logger.Error(fmt.Errorf("printing totCount: %d", totCount), "")
+	if totCount < 0 {
+		os.Exit(1)
+	}
 	block := offsets.GetBlock(topic, partitionID)
 	if block == nil {
 		errMsg := fmt.Errorf("error finding offset block for topic %s and partition %d", topic, partitionID)
