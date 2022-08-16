@@ -1,8 +1,7 @@
 name: main-build
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+
 jobs:
   build:
     name: build
@@ -105,12 +104,12 @@ jobs:
           AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
           AZURE_DEVOPS_POOL_NAME: ${{ secrets.AZURE_DEVOPS_POOL_NAME }}
           AZURE_DEVOPS_PROJECT: ${{ secrets.AZURE_DEVOPS_PROJECT }}
-          AZURE_KEYVAULT_URI:  ${{ secrets.AZURE_KEYVAULT_URI }}
+          AZURE_KEYVAULT_URI: ${{ secrets.AZURE_KEYVAULT_URI }}
           AZURE_LOG_ANALYTICS_WORKSPACE_ID: ${{ secrets.AZURE_LOG_ANALYTICS_WORKSPACE_ID }}
           AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
           AZURE_RUN_WORKLOAD_IDENTITY_TESTS: true
-          AZURE_SERVICE_BUS_CONNECTION_STRING:  ${{ secrets.AZURE_SERVICE_BUS_CONNECTION_STRING }}
-          AZURE_SERVICE_BUS_ALTERNATIVE_CONNECTION_STRING:  ${{ secrets.AZURE_SERVICE_BUS_ALTERNATIVE_CONNECTION_STRING }}
+          AZURE_SERVICE_BUS_CONNECTION_STRING: ${{ secrets.AZURE_SERVICE_BUS_CONNECTION_STRING }}
+          AZURE_SERVICE_BUS_ALTERNATIVE_CONNECTION_STRING: ${{ secrets.AZURE_SERVICE_BUS_ALTERNATIVE_CONNECTION_STRING }}
           AZURE_SP_APP_ID: ${{ secrets.AZURE_SP_APP_ID }}
           AZURE_SP_OBJECT_ID: ${{ secrets.AZURE_SP_OBJECT_ID }}
           AZURE_SP_KEY: ${{ secrets.AZURE_SP_KEY }}
@@ -183,35 +182,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Run Trivy vulnerability scanner in repo mode
-      uses: aquasecurity/trivy-action@0.6.1
-      with:
-        scan-type: 'fs'
-        ignore-unfixed: false
-        format: 'sarif'
-        output: 'code.sarif'
-        exit-code: 1
-        skip-dirs: tests # Remove this once the ts files are removed
+      - name: Run Trivy vulnerability scanner in repo mode
+        uses: aquasecurity/trivy-action@0.6.1
+        with:
+          scan-type: "fs"
+          ignore-unfixed: false
+          format: "sarif"
+          output: "code.sarif"
+          exit-code: 1
+          skip-dirs: tests # Remove this once the ts files are removed
 
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
-      if: always()
-      with:
-        sarif_file: 'code.sarif'
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: "code.sarif"
 
   trivy-scan-metrics-server:
     name: Trivy scan metrics server image - ${{ matrix.name }}
     needs: build
     runs-on: ${{ matrix.runner }}
     strategy:
-       matrix:
+      matrix:
         include:
-        - runner: ARM64
-          name: arm64
-        - runner: ubuntu-latest
-          name: amd64
+          - runner: ARM64
+            name: arm64
+          - runner: ubuntu-latest
+            name: amd64
 
     steps:
       - uses: actions/checkout@v3
@@ -219,27 +218,27 @@ jobs:
       - name: Run Trivy on metrics-server
         uses: aquasecurity/trivy-action@0.6.1
         with:
-          scan-type: 'image'
+          scan-type: "image"
           image-ref: ghcr.io/kedacore/keda-metrics-apiserver:main
-          format: 'sarif'
-          output: 'metrics-server.sarif'
+          format: "sarif"
+          output: "metrics-server.sarif"
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v2
         with:
-          sarif_file: 'metrics-server.sarif'
+          sarif_file: "metrics-server.sarif"
 
   trivy-scan-keda:
     name: Trivy scan keda image - ${{ matrix.name }}
     needs: build
     runs-on: ${{ matrix.runner }}
     strategy:
-       matrix:
+      matrix:
         include:
-        - runner: ARM64
-          name: arm64
-        - runner: ubuntu-latest
-          name: amd64
+          - runner: ARM64
+            name: arm64
+          - runner: ubuntu-latest
+            name: amd64
 
     steps:
       - uses: actions/checkout@v3
@@ -247,12 +246,12 @@ jobs:
       - name: Run Trivy on operator
         uses: aquasecurity/trivy-action@0.6.1
         with:
-          scan-type: 'image'
+          scan-type: "image"
           image-ref: ghcr.io/kedacore/keda:main
-          format: 'sarif'
-          output: 'keda.sarif'
+          format: "sarif"
+          output: "keda.sarif"
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v2
         with:
-          sarif_file: 'keda.sarif'
+          sarif_file: "keda.sarif"
