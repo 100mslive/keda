@@ -25,6 +25,7 @@ type kubernetesWorkloadScaler struct {
 const (
 	kubernetesWorkloadMetricType = "External"
 	podSelectorKey               = "podSelector"
+	allPodsSelectorKey           = "allPodsSelector"
 	valueKey                     = "value"
 	activationValueKey           = "activationValue"
 )
@@ -36,6 +37,7 @@ var phasesCountedAsTerminated = []corev1.PodPhase{
 
 type kubernetesWorkloadMetadata struct {
 	podSelector     labels.Selector
+	allPodsSelector labels.Selector
 	namespace       string
 	value           float64
 	activationValue float64
@@ -70,6 +72,10 @@ func parseWorkloadMetadata(config *ScalerConfig) (*kubernetesWorkloadMetadata, e
 	if err != nil || meta.podSelector.String() == "" {
 		return nil, fmt.Errorf("invalid pod selector")
 	}
+	meta.allPodsSelector, err = labels.Parse(config.TriggerMetadata[allPodsSelectorKey])
+	if err != nil || meta.allPodsSelector.String() == "" {
+		return nil, fmt.Errorf("invalid all pods selector")
+	}
 	meta.value, err = strconv.ParseFloat(config.TriggerMetadata[valueKey], 64)
 	if err != nil || meta.value == 0 {
 		return nil, fmt.Errorf("value must be a float greater than 0")
@@ -94,8 +100,12 @@ func (s *kubernetesWorkloadScaler) IsActive(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	totalPods, err := s.getTotalValue(ctx)
+	if err != nil {
+		return false, err
+	}
 
-	return float64(pods) > s.metadata.activationValue, nil
+	return float64(pods)/float64(totalPods) > s.metadata.activationValue, nil
 }
 
 // Close no need for kubernetes workload scaler
@@ -121,8 +131,12 @@ func (s *kubernetesWorkloadScaler) GetMetrics(ctx context.Context, metricName st
 	if err != nil {
 		return []external_metrics.ExternalMetricValue{}, fmt.Errorf("error inspecting kubernetes workload: %s", err)
 	}
+	totalPods, err := s.getTotalValue(ctx)
+	if err != nil {
+		return []external_metrics.ExternalMetricValue{}, fmt.Errorf("error inspecting kubernetes workload: %s", err)
+	}
 
-	metric := GenerateMetricInMili(metricName, float64(pods))
+	metric := GenerateMetricInMili(metricName, float64(pods)/float64(totalPods))
 
 	return append([]external_metrics.ExternalMetricValue{}, metric), nil
 }
@@ -144,6 +158,31 @@ func (s *kubernetesWorkloadScaler) getMetricValue(ctx context.Context) (int64, e
 	var count int64
 	for _, pod := range podList.Items {
 		count += getCountValue(pod)
+	}
+
+	return count, nil
+}
+
+func (s *kubernetesWorkloadScaler) getTotalValue(ctx context.Context) (int64, error) {
+	podList := &corev1.PodList{}
+	listOptions := client.ListOptions{}
+	listOptions.LabelSelector = s.metadata.allPodsSelector
+	listOptions.Namespace = s.metadata.namespace
+	opts := []client.ListOption{
+		&listOptions,
+	}
+
+	err := s.kubeClient.List(ctx, podList, opts...)
+	if err != nil {
+		return 0, err
+	}
+
+	var count int64
+	for _, pod := range podList.Items {
+		count += getCountValue(pod)
+	}
+	if count == 0 {
+		count = 1
 	}
 
 	return count, nil
