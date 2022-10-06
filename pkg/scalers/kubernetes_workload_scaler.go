@@ -104,6 +104,8 @@ func (s *kubernetesWorkloadScaler) IsActive(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	logger := s.logger.WithValues("scaledjob.AllPodsSelector", s.metadata.allPodsSelector)
+	logger.Info("Workload", "Value", fmt.Sprintf("%v,%v", pods, totalPods))
 
 	return float64(pods)/float64(totalPods) > s.metadata.activationValue, nil
 }
