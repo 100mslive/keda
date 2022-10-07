@@ -331,7 +331,7 @@ func getTargetAverageValue(metricSpecs []v2beta2.MetricSpec) float64 {
 }
 
 func ceilToInt64(x float64) int64 {
-	return int64(math.Ceil(x))
+	return int64(math.Floor(x))
 }
 
 // Min function for float64
