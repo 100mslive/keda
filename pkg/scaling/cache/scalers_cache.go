@@ -116,13 +116,13 @@ func (c *ScalersCache) IsScaledObjectActive(ctx context.Context, scaledObject *k
 	return isActive, isError, []external_metrics.ExternalMetricValue{}
 }
 
-func (c *ScalersCache) IsScaledJobActive(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) (bool, int64, int64) {
+func (c *ScalersCache) IsScaledJobActive(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob, runningJobCount, pendingJobCount int64) (bool, int64, int64) {
 	var queueLength float64
 	var maxValue float64
 	isActive := false
 
 	logger := logf.Log.WithName("scalemetrics")
-	scalersMetrics := c.getScaledJobMetrics(ctx, scaledJob)
+	scalersMetrics := c.getScaledJobMetrics(ctx, scaledJob, runningJobCount, pendingJobCount)
 	switch scaledJob.Spec.ScalingStrategy.MultipleScalersCalculation {
 	case "min":
 		for _, metrics := range scalersMetrics {
@@ -241,7 +241,7 @@ type scalerMetrics struct {
 	isActive    bool
 }
 
-func (c *ScalersCache) getScaledJobMetrics(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) []scalerMetrics {
+func (c *ScalersCache) getScaledJobMetrics(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob, runningJobCount, pendingJobCount int64) []scalerMetrics {
 	var scalersMetrics []scalerMetrics
 	for i, s := range c.Scalers {
 		var queueLength float64
@@ -296,6 +296,11 @@ func (c *ScalersCache) getScaledJobMetrics(ctx context.Context, scaledJob *kedav
 
 		if isTriggerActive {
 			isActive = true
+		}
+		//TODO: don't remove pendingJobCount for some scalers like kuberentes_workload_scaler
+		queueLength -= float64(pendingJobCount)
+		if queueLength < 0 {
+			queueLength = 0
 		}
 
 		if targetAverageValue != 0 {

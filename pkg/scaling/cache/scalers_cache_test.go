@@ -84,7 +84,7 @@ func TestIsScaledJobActive(t *testing.T) {
 		Recorder: recorder,
 	}
 
-	isActive, queueLength, maxValue := cache.IsScaledJobActive(context.TODO(), scaledJobSingle)
+	isActive, queueLength, maxValue := cache.IsScaledJobActive(context.TODO(), scaledJobSingle, 1, 1)
 	assert.Equal(t, true, isActive)
 	assert.Equal(t, int64(20), queueLength)
 	assert.Equal(t, int64(10), maxValue)
@@ -104,7 +104,7 @@ func TestIsScaledJobActive(t *testing.T) {
 		Recorder: recorder,
 	}
 
-	isActive, queueLength, maxValue = cache.IsScaledJobActive(context.TODO(), scaledJobSingle)
+	isActive, queueLength, maxValue = cache.IsScaledJobActive(context.TODO(), scaledJobSingle, 1, 1)
 	assert.Equal(t, false, isActive)
 	assert.Equal(t, int64(0), queueLength)
 	assert.Equal(t, int64(0), maxValue)
@@ -149,7 +149,7 @@ func TestIsScaledJobActive(t *testing.T) {
 			Recorder: recorder,
 		}
 		fmt.Printf("index: %d", index)
-		isActive, queueLength, maxValue = cache.IsScaledJobActive(context.TODO(), scaledJob)
+		isActive, queueLength, maxValue = cache.IsScaledJobActive(context.TODO(), scaledJob, 1, 1)
 		//	assert.Equal(t, 5, index)
 		assert.Equal(t, scalerTestData.ResultIsActive, isActive)
 		assert.Equal(t, scalerTestData.ResultQueueLength, queueLength)
@@ -178,7 +178,7 @@ func TestIsScaledJobActiveIfQueueEmptyButMinReplicaCountGreaterZero(t *testing.T
 		Recorder: recorder,
 	}
 
-	isActive, queueLength, maxValue := cache.IsScaledJobActive(context.TODO(), scaledJobSingle)
+	isActive, queueLength, maxValue := cache.IsScaledJobActive(context.TODO(), scaledJobSingle, 1, 1)
 	assert.Equal(t, true, isActive)
 	assert.Equal(t, int64(0), queueLength)
 	assert.Equal(t, int64(0), maxValue)
