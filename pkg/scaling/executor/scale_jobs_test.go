@@ -280,7 +280,7 @@ func TestGetPendingJobCount(t *testing.T) {
 		scaleExecutor := getMockScaleExecutor(client)
 
 		scaledJob := getMockScaledJobWithPendingPodConditions(testData.PendingPodConditions)
-		result := scaleExecutor.getPendingJobCount(ctx, scaledJob)
+		result := scaleExecutor.GetPendingJobCount(ctx, scaledJob)
 
 		assert.Equal(t, testData.PendingJobCount, result)
 	}

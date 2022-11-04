@@ -283,7 +283,7 @@ func (h *scaleHandler) checkScalers(ctx context.Context, scalableObject interfac
 			h.logger.Error(err, "Error getting scaledJob", "object", scalableObject)
 			return
 		}
-		isActive, scaleTo, maxScale := cache.IsScaledJobActive(ctx, obj)
+		isActive, scaleTo, maxScale := cache.IsScaledJobActive(ctx, obj, h.scaleExecutor.GetRunningJobCount(ctx, obj), h.scaleExecutor.GetPendingJobCount(ctx, obj))
 		h.scaleExecutor.RequestJobScale(ctx, obj, isActive, scaleTo, maxScale)
 	}
 }
