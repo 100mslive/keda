@@ -40,6 +40,8 @@ const (
 type ScaleExecutor interface {
 	RequestJobScale(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob, isActive bool, scaleTo int64, maxScale int64)
 	RequestScale(ctx context.Context, scaledObject *kedav1alpha1.ScaledObject, isActive bool, isError bool)
+	GetRunningJobCount(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) int64
+	GetPendingJobCount(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) int64
 }
 
 type scaleExecutor struct {
