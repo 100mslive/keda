@@ -254,6 +254,9 @@ func (s *mongoDBScaler) getQueryResult(ctx context.Context) (int64, error) {
 	if res < 0 {
 		res = 0
 	}
+
+	s.logger.Info("Desired", "Current", fmt.Sprintf("%v,%v", result.Desired, result.Current))
+
 	return res, nil
 }
 
