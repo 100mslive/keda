@@ -41,8 +41,8 @@ const (
 func (e *scaleExecutor) RequestJobScale(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob, isActive bool, scaleTo int64, maxScale int64) {
 	logger := e.logger.WithValues("scaledJob.Name", scaledJob.Name, "scaledJob.Namespace", scaledJob.Namespace)
 
-	runningJobCount := e.getRunningJobCount(ctx, scaledJob)
-	pendingJobCount := e.getPendingJobCount(ctx, scaledJob)
+	runningJobCount := e.GetRunningJobCount(ctx, scaledJob)
+	pendingJobCount := e.GetPendingJobCount(ctx, scaledJob)
 	logger.Info("Scaling Jobs", "Number of running Jobs", runningJobCount)
 	logger.Info("Scaling Jobs", "Number of pending Jobs ", pendingJobCount)
 
@@ -166,7 +166,7 @@ func (e *scaleExecutor) isJobFinished(j *batchv1.Job) bool {
 	return false
 }
 
-func (e *scaleExecutor) getRunningJobCount(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) int64 {
+func (e *scaleExecutor) GetRunningJobCount(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) int64 {
 	var runningJobs int64
 
 	opts := []client.ListOption{
@@ -240,7 +240,7 @@ func (e *scaleExecutor) areAllPendingPodConditionsFulfilled(ctx context.Context,
 	return len(pendingPodConditions) == fulfilledConditionsCount
 }
 
-func (e *scaleExecutor) getPendingJobCount(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) int64 {
+func (e *scaleExecutor) GetPendingJobCount(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) int64 {
 	var pendingJobs int64
 
 	opts := []client.ListOption{

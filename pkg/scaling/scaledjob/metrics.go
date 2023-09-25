@@ -109,7 +109,7 @@ func IsScaledJobActive(scalersMetrics []ScalerMetrics, multipleScalersCalculatio
 
 // ceilToInt64 returns the int64 ceil value for the float64 input
 func ceilToInt64(x float64) int64 {
-	return int64(math.Ceil(x))
+	return int64(math.Floor(x))
 }
 
 // min returns the minimum for input float64 values

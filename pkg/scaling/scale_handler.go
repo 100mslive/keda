@@ -255,7 +255,7 @@ func (h *scaleHandler) checkScalers(ctx context.Context, scalableObject interfac
 			return
 		}
 
-		isActive, scaleTo, maxScale := h.isScaledJobActive(ctx, obj)
+		isActive, scaleTo, maxScale := h.isScaledJobActive(ctx, obj, h.scaleExecutor.GetRunningJobCount(ctx, obj), h.scaleExecutor.GetPendingJobCount(ctx, obj))
 		h.scaleExecutor.RequestJobScale(ctx, obj, isActive, scaleTo, maxScale)
 	}
 }
@@ -659,7 +659,7 @@ func (h *scaleHandler) getScaledObjectState(ctx context.Context, scaledObject *k
 
 // getScaledJobMetrics returns metrics for specified metric name for a ScaledJob identified by its name and namespace.
 // It could either query the metric value directly from the scaler or from a cache, that's being stored for the scaler.
-func (h *scaleHandler) getScaledJobMetrics(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) []scaledjob.ScalerMetrics {
+func (h *scaleHandler) getScaledJobMetrics(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob, _, pendingJobCount int64) []scaledjob.ScalerMetrics {
 	cache, err := h.GetScalersCache(ctx, scaledJob)
 	if err != nil {
 		log.Error(err, "error getting scalers cache", "scaledJob.Namespace", scaledJob.Namespace, "scaledJob.Name", scaledJob.Name)
@@ -693,6 +693,12 @@ func (h *scaleHandler) getScaledJobMetrics(ctx context.Context, scaledJob *kedav
 
 		queueLength, maxValue, targetAverageValue := scaledjob.CalculateQueueLengthAndMaxValue(metrics, metricSpecs, scaledJob.MaxReplicaCount())
 
+		//TODO: don't remove pendingJobCount for some scalers like kuberentes_workload_scaler
+		queueLength -= float64(pendingJobCount)
+		if queueLength < 0 {
+			queueLength = 0
+		}
+
 		scalerLogger.V(1).Info("Scaler Metric value", "isTriggerActive", isTriggerActive, metricSpecs[0].External.Metric.Name, queueLength, "targetAverageValue", targetAverageValue)
 
 		scalersMetrics = append(scalersMetrics, scaledjob.ScalerMetrics{
@@ -707,10 +713,10 @@ func (h *scaleHandler) getScaledJobMetrics(ctx context.Context, scaledJob *kedav
 // isScaledJobActive returns whether the input ScaledJob:
 // is active as the first return value,
 // the second and the third return values indicate queueLength and maxValue for scale
-func (h *scaleHandler) isScaledJobActive(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob) (bool, int64, int64) {
+func (h *scaleHandler) isScaledJobActive(ctx context.Context, scaledJob *kedav1alpha1.ScaledJob, runningJobCount, pendingJobCount int64) (bool, int64, int64) {
 	logger := logf.Log.WithName("scalemetrics")
 
-	scalersMetrics := h.getScaledJobMetrics(ctx, scaledJob)
+	scalersMetrics := h.getScaledJobMetrics(ctx, scaledJob, runningJobCount, pendingJobCount)
 	isActive, queueLength, maxValue, maxFloatValue :=
 		scaledjob.IsScaledJobActive(scalersMetrics, scaledJob.Spec.ScalingStrategy.MultipleScalersCalculation, scaledJob.MinReplicaCount(), scaledJob.MaxReplicaCount())
 

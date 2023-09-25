@@ -37,6 +37,7 @@ var phasesCountedAsTerminated = []corev1.PodPhase{
 
 type kubernetesWorkloadMetadata struct {
 	podSelector     labels.Selector
+	allPodsSelector labels.Selector
 	namespace       string
 	value           float64
 	activationValue float64
@@ -72,6 +73,10 @@ func parseWorkloadMetadata(config *ScalerConfig) (*kubernetesWorkloadMetadata, e
 		return nil, fmt.Errorf("invalid pod selector")
 	}
 	meta.podSelector = podSelector
+	meta.allPodsSelector, err = labels.Parse(config.TriggerMetadata[allPodsSelectorKey])
+	if err != nil || meta.allPodsSelector.String() == "" {
+		return nil, fmt.Errorf("invalid all pods selector")
+	}
 	value, err := strconv.ParseFloat(config.TriggerMetadata[valueKey], 64)
 	if err != nil || value == 0 {
 		return nil, fmt.Errorf("value must be a float greater than 0")
@@ -115,9 +120,17 @@ func (s *kubernetesWorkloadScaler) GetMetricsAndActivity(ctx context.Context, me
 		return []external_metrics.ExternalMetricValue{}, false, fmt.Errorf("error inspecting kubernetes workload: %w", err)
 	}
 
-	metric := GenerateMetricInMili(metricName, float64(pods))
+	totalPods, err := s.getTotalValue(ctx)
+	if err != nil {
+		return []external_metrics.ExternalMetricValue{}, false, fmt.Errorf("error inspecting kubernetes workload: %s", err)
+	}
 
-	return []external_metrics.ExternalMetricValue{metric}, float64(pods) > s.metadata.activationValue, nil
+	metric := GenerateMetricInMili(metricName, float64(pods)/float64(totalPods))
+
+	logger := s.logger.WithValues("scaledjob.AllPodsSelector", s.metadata.allPodsSelector)
+	logger.Info("Workload", "Value", fmt.Sprintf("%v,%v", pods, totalPods))
+
+	return []external_metrics.ExternalMetricValue{metric}, (float64(pods) / float64(totalPods)) > s.metadata.activationValue, nil
 }
 
 func (s *kubernetesWorkloadScaler) getMetricValue(ctx context.Context) (int64, error) {
@@ -137,6 +150,31 @@ func (s *kubernetesWorkloadScaler) getMetricValue(ctx context.Context) (int64, e
 	var count int64
 	for _, pod := range podList.Items {
 		count += getCountValue(pod)
+	}
+
+	return count, nil
+}
+
+func (s *kubernetesWorkloadScaler) getTotalValue(ctx context.Context) (int64, error) {
+	podList := &corev1.PodList{}
+	listOptions := client.ListOptions{}
+	listOptions.LabelSelector = s.metadata.allPodsSelector
+	listOptions.Namespace = s.metadata.namespace
+	opts := []client.ListOption{
+		&listOptions,
+	}
+
+	err := s.kubeClient.List(ctx, podList, opts...)
+	if err != nil {
+		return 0, err
+	}
+
+	var count int64
+	for _, pod := range podList.Items {
+		count += getCountValue(pod)
+	}
+	if count == 0 {
+		count = 1
 	}
 
 	return count, nil
