@@ -49,6 +49,7 @@ To learn more about active deprecations, we recommend checking [GitHub Discussio
 
 ### New
 
+- **General**: A new experimental Kafka Scaler implementation using kafka-go library `apache-kafka` ([#4692](https://github.com/kedacore/keda/issues/4692))
 - **General**: Introduce new Google Cloud Tasks scaler functionality to scale based on the queue length ([#3613](https://github.com/kedacore/keda/issues/3613))
 - **AWS SQS Scaler**: Support for scaling to include delayed messages. ([#4377](https://github.com/kedacore/keda/issues/4377))
 - **Governance**: KEDA transitioned to CNCF Graduated project ([#63](https://github.com/kedacore/governance/issues/63))
@@ -60,16 +61,18 @@ Here is an overview of all new **experimental** features:
 - **General**: Add support for formula based evaluation of metric values ([#2440](https://github.com/kedacore/keda/issues/2440))
 
 ### Improvements
-
+- **General**: Add apiserver Prometheus metrics to KEDA Metric Server ([#4460](https://github.com/kedacore/keda/issues/4460))
 - **General**: Add more events for user checking ([#796](https://github.com/kedacore/keda/issues/3764))
 - **General**: Add ScaledObject/ScaledJob names to output of `kubectl get triggerauthentication/clustertriggerauthentication` ([#796](https://github.com/kedacore/keda/issues/796))
 - **General**: Add standalone CRD generation to release workflow ([#2726](https://github.com/kedacore/keda/issues/2726))
 - **General**: Adding a changelog validating script to check for formatting and order ([#3190](https://github.com/kedacore/keda/issues/3190))
+- **General**: Introduce annotation `autoscaling.keda.sh/paused: true` for ScaledObject to pause autoscaling ([#3304](https://github.com/kedacore/keda/issues/3304))
 - **General**: Update golangci-lint version documented in CONTRIBUTING.md since old version doesn't support go 1.20 (N/A)
 - **General**: Updated AWS SDK and updated all the aws scalers ([#4905](https://github.com/kedacore/keda/issues/4905))
 - **Azure Pod Identity**: Introduce validation to prevent usage of empty identity ID for Azure identity providers ([#4528](https://github.com/kedacore/keda/issues/4528))
 - **Prometheus Scaler**: Remove trailing whitespaces in customAuthHeader and customAuthValue ([#4960](https://github.com/kedacore/keda/issues/4960))
 - **Pulsar Scaler**: Add support for OAuth extensions ([#4700](https://github.com/kedacore/keda/issues/4700))
+- **Redis Scalers**: Add TLS authentication support for Redis and Redis stream scalers ([#4917](https://github.com/kedacore/keda/issues/4917))
 
 ### Fixes
 - **General**: Add validations for stabilizationWindowSeconds ([#4976](https://github.com/kedacore/keda/issues/4976))
