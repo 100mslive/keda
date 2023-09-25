@@ -25,6 +25,7 @@ type kubernetesWorkloadScaler struct {
 const (
 	kubernetesWorkloadMetricType = "External"
 	podSelectorKey               = "podSelector"
+	allPodsSelectorKey           = "allPodsSelector"
 	valueKey                     = "value"
 	activationValueKey           = "activationValue"
 )

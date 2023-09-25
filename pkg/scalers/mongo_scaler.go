@@ -211,7 +211,8 @@ func (s *mongoDBScaler) Close(ctx context.Context) error {
 }
 
 type resultVal struct {
-	Value int64 `json:"value" bson:"value"`
+	Desired int64 `json:"desired" bson:"desired"`
+	Current int64 `json:"current" bson:"current"`
 }
 
 // getQueryResult query mongoDB by meta.query
@@ -233,8 +234,14 @@ func (s *mongoDBScaler) getQueryResult(ctx context.Context) (int64, error) {
 		s.logger.Error(err, fmt.Sprintf("failed to query %v in %v, because of %v", s.metadata.dbName, s.metadata.collection, err))
 		return 0, err
 	}
-
-	return result.Value, nil
+	res := result.Desired - result.Current
+	if res > result.Desired {
+		res = result.Desired
+	}
+	if res < 0 {
+		res = 0
+	}
+	return res, nil
 }
 
 // GetMetricsAndActivity query from mongoDB,and return to external metrics
