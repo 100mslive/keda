@@ -1,7 +1,7 @@
 name: Reusable workflow to run smoke tests on different k8s versions
 
 on:
-  workflow_call:
+  workflow_dispatch:
 
 jobs:
   smoke-tests:

@@ -1,9 +1,6 @@
 name: E2E Test Checker
 on:
-  pull_request_target:
-    types:
-      - labeled
-      - unlabeled
+  workflow_dispatch:
 
 env:
   SKIP_E2E_TAG: skip-e2e

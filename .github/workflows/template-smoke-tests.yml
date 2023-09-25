@@ -1,17 +1,7 @@
 name: Reusable workflow to run smoke tests
 
 on:
-  workflow_call:
-    inputs:
-      runs-on:
-        required: true
-        type: string
-      kubernetesVersion:
-        required: true
-        type: string
-      kindImage:
-        required: true
-        type: string
+  workflow_dispatch:
 jobs:
   smoke-tests:
     name: Validate k8s-${{ inputs.kubernetesVersion }}

@@ -1,35 +1,7 @@
 name: Reusable workflow to run trivy scan
 
 on:
-  workflow_call:
-    inputs:
-      runs-on:
-        required: true
-        type: string
-      scan-type:
-        required: true
-        type: string
-      format:
-        required: true
-        type: string
-      output:
-        required: false
-        type: string
-        default: trivy.sarif
-      image-ref:
-        required: false
-        type: string
-        default: ""
-      severity:
-        required: false
-        type: string
-        default: "CRITICAL,HIGH"
-      exit-code:
-        required: true
-        type: number
-      publish:
-        required: true
-        type: boolean
+  workflow_dispatch:
 
 jobs:
   trivy-scan:

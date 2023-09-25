@@ -1,7 +1,6 @@
 name: pr-e2e-tests
 on:
-  issue_comment:
-    types: [created]
+  workflow_dispatch:
 
 env:
   E2E_CHECK_NAME: e2e tests
