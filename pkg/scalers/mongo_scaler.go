@@ -210,6 +210,10 @@ func (s *mongoDBScaler) Close(ctx context.Context) error {
 	return nil
 }
 
+type resultVal struct {
+	Value int64 `json:"value" bson:"value"`
+}
+
 // getQueryResult query mongoDB by meta.query
 func (s *mongoDBScaler) getQueryResult(ctx context.Context) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, mongoDBDefaultTimeOut)
@@ -221,13 +225,16 @@ func (s *mongoDBScaler) getQueryResult(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 
-	docsNum, err := s.client.Database(s.metadata.dbName).Collection(s.metadata.collection).CountDocuments(ctx, filter)
+	var result resultVal
+
+	err = s.client.Database(s.metadata.dbName).Collection(s.metadata.collection).FindOne(ctx, filter).Decode(&result)
+
 	if err != nil {
 		s.logger.Error(err, fmt.Sprintf("failed to query %v in %v, because of %v", s.metadata.dbName, s.metadata.collection, err))
 		return 0, err
 	}
 
-	return docsNum, nil
+	return result.Value, nil
 }
 
 // GetMetricsAndActivity query from mongoDB,and return to external metrics
