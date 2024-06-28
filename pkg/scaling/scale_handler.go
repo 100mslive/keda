@@ -459,6 +459,8 @@ func buildScaler(ctx context.Context, client client.Client, triggerType string, 
 		return scalers.NewRedisStreamsScaler(ctx, false, true, config)
 	case "redis-streams":
 		return scalers.NewRedisStreamsScaler(ctx, false, false, config)
+	case "redis-hms":
+		return scalers.NewRedisHMSScaler(ctx, config)
 	case "selenium-grid":
 		return scalers.NewSeleniumGridScaler(config)
 	case "solace-event-queue":
