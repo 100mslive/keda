@@ -27,7 +27,7 @@ type redisHmsMetadata struct {
 	mapName            string
 	databaseIndex      int
 	connectionInfo     redisConnectionInfo
-	triggerIndex       int
+	scalerIndex        int
 }
 
 // NewRedisHMSScaler creates a new redisHMSScaler
@@ -164,7 +164,7 @@ func createRedisHmsScalerWithClient(client *redis.Client, meta *redisHmsMetadata
 	}
 }
 
-func parseRedisHmsMetadata(config *scalersconfig.ScalerConfig, parserFn redisAddressParser) (*redisHmsMetadata, error) {
+func parseRedisHmsMetadata(config *ScalerConfig, parserFn redisAddressParser) (*redisHmsMetadata, error) {
 	connInfo, err := parserFn(config.TriggerMetadata, config.ResolvedEnv, config.AuthParams)
 	if err != nil {
 		return nil, err
@@ -210,7 +210,7 @@ func parseRedisHmsMetadata(config *scalersconfig.ScalerConfig, parserFn redisAdd
 		}
 		meta.databaseIndex = int(dbIndex)
 	}
-	meta.triggerIndex = config.TriggerIndex
+	meta.scalerIndex = config.ScalerIndex
 	return &meta, nil
 }
 
@@ -223,7 +223,7 @@ func (s *redisHmsScaler) GetMetricSpecForScaling(context.Context) []v2.MetricSpe
 	metricName := util.NormalizeString(fmt.Sprintf("redis-hms-%s", s.metadata.mapName))
 	externalMetric := &v2.ExternalMetricSource{
 		Metric: v2.MetricIdentifier{
-			Name: GenerateMetricNameWithIndex(s.metadata.triggerIndex, metricName),
+			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, metricName),
 		},
 		Target: GetMetricTarget(s.metricType, s.metadata.mapValue),
 	}
