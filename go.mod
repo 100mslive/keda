@@ -88,8 +88,10 @@ require (
 	google.golang.org/protobuf v1.31.0
 	k8s.io/api v0.28.1
 	k8s.io/apimachinery v0.28.1
+	k8s.io/apiserver v0.28.1
 	k8s.io/client-go v0.28.1
 	k8s.io/code-generator v0.28.1
+	k8s.io/component-base v0.28.1
 	k8s.io/klog/v2 v2.100.1
 	k8s.io/kube-openapi v0.0.0-20230901164831-6c774f458599
 	k8s.io/metrics v0.28.1
@@ -319,8 +321,6 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apiextensions-apiserver v0.28.1 // indirect
-	k8s.io/apiserver v0.28.1 // indirect
-	k8s.io/component-base v0.28.1 // indirect
 	k8s.io/gengo v0.0.0-20230829151522-9cce18d56c01 // indirect
 	k8s.io/kms v0.28.1 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.1.2 // indirect
