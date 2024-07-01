@@ -33,27 +33,32 @@ type redisHmsMetadata struct {
 // NewRedisHMSScaler creates a new redisHMSScaler
 func NewRedisHMSScaler(ctx context.Context, config *ScalerConfig) (Scaler, error) {
 	luaScript := `
-		local mapName = KEYS[1]
+local mapName = KEYS[1]
 
-		-- Retrieve the map from Redis
-		local map = redis.call(hgetall, mapName)
-		
-		-- Convert the flat list returned by hgetall to a proper table
-		local mapTable = {}
-		for i = 1, #map, 2 do
-			mapTable[map[i]] = tonumber(map[i+1])
-		end
-	
-		-- Ensure the map has the necessary keys
-		if mapTable.current == nil or mapTable.desired == nil then
-			return nil, "Error: The map must contain 'current' and 'desired' keys."
-		end
-	
-		-- Calculate the difference
-		local difference = mapTable.desired - mapTable.current
-	
-		-- Return the difference
-		return difference
+-- Retrieve the map from Redis
+local map = redis.call('HGETALL', mapName)
+
+-- Convert the flat list returned by hgetall to a proper table
+local mapTable = {}
+for i = 1, #map, 2 do
+	mapTable[map[i]] = tonumber(map[i+1])
+end
+
+-- Ensure the map has the necessary keys
+if mapTable.current == nil or mapTable.desired == nil then
+	return nil, "Error: The map must contain 'current' and 'desired' keys."
+end
+
+-- Calculate the difference
+local difference = mapTable.desired - mapTable.current
+
+-- If the difference is positive, return it
+if difference > 0 then
+  return difference
+end
+
+-- Return the difference
+return 0
 	`
 
 	metricType, err := GetMetricTargetType(config)
