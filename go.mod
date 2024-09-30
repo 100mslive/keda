@@ -87,33 +87,6 @@ require (
 	github.com/stretchr/testify v1.9.0
 	github.com/tidwall/gjson v1.17.3
 	github.com/xhit/go-str2duration/v2 v2.1.0
-<<<<<<< HEAD
-	github.com/youmark/pkcs8 v0.0.0-20201027041543-1326539a0a0a
-	go.etcd.io/etcd/client/v3 v3.5.9
-	go.mongodb.org/mongo-driver v1.12.1
-	golang.org/x/oauth2 v0.11.0
-	golang.org/x/sync v0.3.0
-	google.golang.org/api v0.138.0
-	google.golang.org/grpc v1.57.0
-	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.3.0
-	google.golang.org/protobuf v1.31.0
-	k8s.io/api v0.28.1
-	k8s.io/apimachinery v0.28.1
-	k8s.io/apiserver v0.28.1
-	k8s.io/client-go v0.28.1
-	k8s.io/code-generator v0.28.1
-	k8s.io/component-base v0.28.1
-	k8s.io/klog/v2 v2.100.1
-	k8s.io/kube-openapi v0.0.0-20230901164831-6c774f458599
-	k8s.io/metrics v0.28.1
-	k8s.io/utils v0.0.0-20230726121419-3b25d923346b
-	knative.dev/pkg v0.0.0-20230901225035-211243a92d2f
-	sigs.k8s.io/controller-runtime v0.16.1
-	sigs.k8s.io/controller-runtime/tools/setup-envtest v0.0.0-20230901192909-1449c3654655
-	sigs.k8s.io/controller-tools v0.13.0
-	sigs.k8s.io/custom-metrics-apiserver v1.28.0
-	sigs.k8s.io/kustomize/kustomize/v5 v5.1.1
-=======
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78
 	go.etcd.io/etcd/client/v3 v3.5.15
 	go.mongodb.org/mongo-driver v1.16.0
@@ -163,7 +136,6 @@ replace (
 	k8s.io/component-base => k8s.io/component-base v0.29.7
 	k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20231010175941-2dd684a91f00
 	k8s.io/metrics => k8s.io/metrics v0.29.7
->>>>>>> upstream/main
 )
 
 replace (
@@ -397,19 +369,11 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-<<<<<<< HEAD
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apiextensions-apiserver v0.28.1 // indirect
 	k8s.io/gengo v0.0.0-20230829151522-9cce18d56c01 // indirect
 	k8s.io/kms v0.28.1 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.1.2 // indirect
-=======
-	gopkg.in/yaml.v3 v3.0.1
-	k8s.io/apiextensions-apiserver v0.30.0 // indirect
-	k8s.io/gengo v0.0.0-20240129211411-f967bbeff4b4 // indirect
-	k8s.io/kms v0.30.0 // indirect
-	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.29.0 // indirect
->>>>>>> upstream/main
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 	sigs.k8s.io/kustomize/api v0.17.3 // indirect
 	sigs.k8s.io/kustomize/cmd/config v0.14.2 // indirect
