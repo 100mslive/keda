@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"strconv"
 
+	monitoringpb "cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
 	"github.com/go-logr/logr"
-	monitoringpb "google.golang.org/genproto/googleapis/monitoring/v3"
-	"k8s.io/api/autoscaling/v2beta2"
-	"k8s.io/apimachinery/pkg/labels"
+	v2 "k8s.io/api/autoscaling/v2"
 	"k8s.io/metrics/pkg/apis/external_metrics"
 
+	"github.com/kedacore/keda/v2/pkg/scalers/gcp"
+	"github.com/kedacore/keda/v2/pkg/scalers/scalersconfig"
 	kedautil "github.com/kedacore/keda/v2/pkg/util"
 )
 
@@ -19,8 +20,8 @@ const (
 )
 
 type stackdriverScaler struct {
-	client     *StackDriverClient
-	metricType v2beta2.MetricTargetType
+	client     *gcp.StackDriverClient
+	metricType v2.MetricTargetType
 	metadata   *stackdriverMetadata
 	logger     logr.Logger
 }
@@ -28,26 +29,28 @@ type stackdriverScaler struct {
 type stackdriverMetadata struct {
 	projectID             string
 	filter                string
-	targetValue           int64
-	activationTargetValue int64
+	targetValue           float64
+	activationTargetValue float64
 	metricName            string
+	valueIfNull           *float64
+	filterDuration        int64
 
-	gcpAuthorization *gcpAuthorizationMetadata
+	gcpAuthorization *gcp.AuthorizationMetadata
 	aggregation      *monitoringpb.Aggregation
 }
 
 // NewStackdriverScaler creates a new stackdriverScaler
-func NewStackdriverScaler(ctx context.Context, config *ScalerConfig) (Scaler, error) {
+func NewStackdriverScaler(ctx context.Context, config *scalersconfig.ScalerConfig) (Scaler, error) {
 	metricType, err := GetMetricTargetType(config)
 	if err != nil {
-		return nil, fmt.Errorf("error getting scaler metric type: %s", err)
+		return nil, fmt.Errorf("error getting scaler metric type: %w", err)
 	}
 
 	logger := InitializeLogger(config, "gcp_stackdriver_scaler")
 
 	meta, err := parseStackdriverMetadata(config, logger)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing Stackdriver metadata: %s", err)
+		return nil, fmt.Errorf("error parsing Stackdriver metadata: %w", err)
 	}
 
 	client, err := initializeStackdriverClient(ctx, meta.gcpAuthorization, logger)
@@ -64,7 +67,7 @@ func NewStackdriverScaler(ctx context.Context, config *ScalerConfig) (Scaler, er
 	}, nil
 }
 
-func parseStackdriverMetadata(config *ScalerConfig, logger logr.Logger) (*stackdriverMetadata, error) {
+func parseStackdriverMetadata(config *scalersconfig.ScalerConfig, logger logr.Logger) (*stackdriverMetadata, error) {
 	meta := stackdriverMetadata{}
 	meta.targetValue = defaultStackdriverTargetValue
 
@@ -89,13 +92,13 @@ func parseStackdriverMetadata(config *ScalerConfig, logger logr.Logger) (*stackd
 	}
 
 	name := kedautil.NormalizeString(fmt.Sprintf("gcp-stackdriver-%s", meta.projectID))
-	meta.metricName = GenerateMetricNameWithIndex(config.ScalerIndex, name)
+	meta.metricName = GenerateMetricNameWithIndex(config.TriggerIndex, name)
 
 	if val, ok := config.TriggerMetadata["targetValue"]; ok {
-		targetValue, err := strconv.ParseInt(val, 10, 64)
+		targetValue, err := strconv.ParseFloat(val, 64)
 		if err != nil {
 			logger.Error(err, "Error parsing targetValue")
-			return nil, fmt.Errorf("error parsing targetValue: %s", err.Error())
+			return nil, fmt.Errorf("error parsing targetValue: %w", err)
 		}
 
 		meta.targetValue = targetValue
@@ -103,28 +106,45 @@ func parseStackdriverMetadata(config *ScalerConfig, logger logr.Logger) (*stackd
 
 	meta.activationTargetValue = 0
 	if val, ok := config.TriggerMetadata["activationTargetValue"]; ok {
-		activationTargetValue, err := strconv.ParseInt(val, 10, 64)
+		activationTargetValue, err := strconv.ParseFloat(val, 64)
 		if err != nil {
-			return nil, fmt.Errorf("activationTargetValue parsing error %s", err.Error())
+			return nil, fmt.Errorf("activationTargetValue parsing error %w", err)
 		}
 		meta.activationTargetValue = activationTargetValue
 	}
 
-	auth, err := getGcpAuthorization(config, config.ResolvedEnv)
+	if val, ok := config.TriggerMetadata["valueIfNull"]; ok && val != "" {
+		valueIfNull, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return nil, fmt.Errorf("valueIfNull parsing error %w", err)
+		}
+		meta.valueIfNull = &valueIfNull
+	}
+
+	if val, ok := config.TriggerMetadata["filterDuration"]; ok {
+		filterDuration, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("filterDuration parsing error %w", err)
+		}
+		meta.filterDuration = filterDuration
+	}
+
+	auth, err := gcp.GetGCPAuthorization(config)
 	if err != nil {
 		return nil, err
 	}
 	meta.gcpAuthorization = auth
 
-	meta.aggregation, err = parseAggregation(config, logger)
+	aggregation, err := parseAggregation(config, logger)
 	if err != nil {
 		return nil, err
 	}
+	meta.aggregation = aggregation
 
 	return &meta, nil
 }
 
-func parseAggregation(config *ScalerConfig, logger logr.Logger) (*monitoringpb.Aggregation, error) {
+func parseAggregation(config *scalersconfig.ScalerConfig, logger logr.Logger) (*monitoringpb.Aggregation, error) {
 	if period, ok := config.TriggerMetadata["alignmentPeriodSeconds"]; ok {
 		if period == "" {
 			return nil, nil
@@ -137,22 +157,22 @@ func parseAggregation(config *ScalerConfig, logger logr.Logger) (*monitoringpb.A
 		}
 		if err != nil {
 			logger.Error(err, "Error parsing alignmentPeriodSeconds")
-			return nil, fmt.Errorf("error parsing alignmentPeriodSeconds: %s", err.Error())
+			return nil, fmt.Errorf("error parsing alignmentPeriodSeconds: %w", err)
 		}
 
-		return NewStackdriverAggregator(val, config.TriggerMetadata["alignmentAligner"], config.TriggerMetadata["alignmentReducer"])
+		return gcp.NewStackdriverAggregator(val, config.TriggerMetadata["alignmentAligner"], config.TriggerMetadata["alignmentReducer"])
 	}
 
 	return nil, nil
 }
 
-func initializeStackdriverClient(ctx context.Context, gcpAuthorization *gcpAuthorizationMetadata, logger logr.Logger) (*StackDriverClient, error) {
-	var client *StackDriverClient
+func initializeStackdriverClient(ctx context.Context, gcpAuthorization *gcp.AuthorizationMetadata, logger logr.Logger) (*gcp.StackDriverClient, error) {
+	var client *gcp.StackDriverClient
 	var err error
-	if gcpAuthorization.podIdentityProviderEnabled {
-		client, err = NewStackDriverClientPodIdentity(ctx)
+	if gcpAuthorization.PodIdentityProviderEnabled {
+		client, err = gcp.NewStackDriverClientPodIdentity(ctx)
 	} else {
-		client, err = NewStackDriverClient(ctx, gcpAuthorization.GoogleApplicationCredentials)
+		client, err = gcp.NewStackDriverClient(ctx, gcpAuthorization.GoogleApplicationCredentials)
 	}
 
 	if err != nil {
@@ -162,64 +182,54 @@ func initializeStackdriverClient(ctx context.Context, gcpAuthorization *gcpAutho
 	return client, nil
 }
 
-func (s *stackdriverScaler) IsActive(ctx context.Context) (bool, error) {
-	value, err := s.getMetrics(ctx)
-	if err != nil {
-		s.logger.Error(err, "error getting metric value")
-		return false, err
-	}
-	return value > s.metadata.activationTargetValue, nil
-}
-
 func (s *stackdriverScaler) Close(context.Context) error {
 	if s.client != nil {
-		err := s.client.metricsClient.Close()
+		err := s.client.Close()
 		s.client = nil
 		if err != nil {
 			s.logger.Error(err, "error closing StackDriver client")
 		}
 	}
-
 	return nil
 }
 
 // GetMetricSpecForScaling returns the metric spec for the HPA
-func (s *stackdriverScaler) GetMetricSpecForScaling(context.Context) []v2beta2.MetricSpec {
-	externalMetric := &v2beta2.ExternalMetricSource{
-		Metric: v2beta2.MetricIdentifier{
+func (s *stackdriverScaler) GetMetricSpecForScaling(context.Context) []v2.MetricSpec {
+	externalMetric := &v2.ExternalMetricSource{
+		Metric: v2.MetricIdentifier{
 			Name: s.metadata.metricName,
 		},
-		Target: GetMetricTarget(s.metricType, s.metadata.targetValue),
+		Target: GetMetricTargetMili(s.metricType, s.metadata.targetValue),
 	}
 
 	// Create the metric spec for the HPA
-	metricSpec := v2beta2.MetricSpec{
+	metricSpec := v2.MetricSpec{
 		External: externalMetric,
 		Type:     externalMetricType,
 	}
 
-	return []v2beta2.MetricSpec{metricSpec}
+	return []v2.MetricSpec{metricSpec}
 }
 
-// GetMetrics connects to Stack Driver and retrieves the metric
-func (s *stackdriverScaler) GetMetrics(ctx context.Context, metricName string, metricSelector labels.Selector) ([]external_metrics.ExternalMetricValue, error) {
+// GetMetricsAndActivity connects to Stack Driver and retrieves the metric
+func (s *stackdriverScaler) GetMetricsAndActivity(ctx context.Context, metricName string) ([]external_metrics.ExternalMetricValue, bool, error) {
 	value, err := s.getMetrics(ctx)
 	if err != nil {
 		s.logger.Error(err, "error getting metric value")
-		return []external_metrics.ExternalMetricValue{}, err
+		return []external_metrics.ExternalMetricValue{}, false, err
 	}
 
-	metric := GenerateMetricInMili(metricName, float64(value))
+	metric := GenerateMetricInMili(metricName, value)
 
-	return append([]external_metrics.ExternalMetricValue{}, metric), nil
+	return []external_metrics.ExternalMetricValue{metric}, value > s.metadata.activationTargetValue, nil
 }
 
 // getMetrics gets metric type value from stackdriver api
-func (s *stackdriverScaler) getMetrics(ctx context.Context) (int64, error) {
-	val, err := s.client.GetMetrics(ctx, s.metadata.filter, s.metadata.projectID, s.metadata.aggregation)
+func (s *stackdriverScaler) getMetrics(ctx context.Context) (float64, error) {
+	val, err := s.client.GetMetrics(ctx, s.metadata.filter, s.metadata.projectID, s.metadata.aggregation, s.metadata.valueIfNull, s.metadata.filterDuration)
 	if err == nil {
 		s.logger.V(1).Info(
-			fmt.Sprintf("Getting metrics for project %s, filter %s and aggregation %v. Result: %d",
+			fmt.Sprintf("Getting metrics for project %s, filter %s and aggregation %v. Result: %f",
 				s.metadata.projectID,
 				s.metadata.filter,
 				s.metadata.aggregation,
