@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	_ "go.uber.org/automaxprocs"
 	apimachineryruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	kubeinformers "k8s.io/client-go/informers"
@@ -37,10 +38,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	eventingv1alpha1 "github.com/kedacore/keda/v2/apis/eventing/v1alpha1"
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
+	eventingcontrollers "github.com/kedacore/keda/v2/controllers/eventing"
 	kedacontrollers "github.com/kedacore/keda/v2/controllers/keda"
 	"github.com/kedacore/keda/v2/pkg/certificates"
+	"github.com/kedacore/keda/v2/pkg/eventemitter"
 	"github.com/kedacore/keda/v2/pkg/k8s"
+	"github.com/kedacore/keda/v2/pkg/metricscollector"
 	"github.com/kedacore/keda/v2/pkg/metricsservice"
 	"github.com/kedacore/keda/v2/pkg/scaling"
 	kedautil "github.com/kedacore/keda/v2/pkg/util"
@@ -56,13 +61,17 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(kedav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(eventingv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
 func main() {
+	var enablePrometheusMetrics bool
+	var enableOpenTelemetryMetrics bool
 	var metricsAddr string
 	var probeAddr string
 	var metricsServiceAddr string
+	var profilingAddr string
 	var enableLeaderElection bool
 	var adapterClientRequestQPS float32
 	var adapterClientRequestBurst int
@@ -72,11 +81,17 @@ func main() {
 	var operatorServiceName string
 	var metricsServerServiceName string
 	var webhooksServiceName string
+	var k8sClusterName string
+	var k8sClusterDomain string
 	var enableCertRotation bool
 	var validatingWebhookName string
-	pflag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	var caDirs []string
+	pflag.BoolVar(&enablePrometheusMetrics, "enable-prometheus-metrics", true, "Enable the prometheus metric of keda-operator.")
+	pflag.BoolVar(&enableOpenTelemetryMetrics, "enable-opentelemetry-metrics", false, "Enable the opentelemetry metric of keda-operator.")
+	pflag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the prometheus metric endpoint binds to.")
 	pflag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	pflag.StringVar(&metricsServiceAddr, "metrics-service-bind-address", ":9666", "The address the gRPRC Metrics Service endpoint binds to.")
+	pflag.StringVar(&profilingAddr, "profiling-bind-address", "", "The address the profiling would be exposed on.")
 	pflag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -88,8 +103,11 @@ func main() {
 	pflag.StringVar(&operatorServiceName, "operator-service-name", "keda-operator", "Operator service name. Defaults to keda-operator")
 	pflag.StringVar(&metricsServerServiceName, "metrics-server-service-name", "keda-metrics-apiserver", "Metrics server service name. Defaults to keda-metrics-apiserver")
 	pflag.StringVar(&webhooksServiceName, "webhooks-service-name", "keda-admission-webhooks", "Webhook service name. Defaults to keda-admission-webhooks")
+	pflag.StringVar(&k8sClusterName, "k8s-cluster-name", "kubernetes-default", "k8s cluster name. Defaults to kubernetes-default")
+	pflag.StringVar(&k8sClusterDomain, "k8s-cluster-domain", "cluster.local", "Kubernetes cluster domain. Defaults to cluster.local")
 	pflag.BoolVar(&enableCertRotation, "enable-cert-rotation", false, "enable automatic generation and rotation of TLS certificates/keys")
 	pflag.StringVar(&validatingWebhookName, "validating-webhook-name", "keda-admission", "ValidatingWebhookConfiguration name. Defaults to keda-admission")
+	pflag.StringArrayVar(&caDirs, "ca-dir", []string{"/custom/ca"}, "Directory with CA certificates for scalers to authenticate TLS connections. Can be specified multiple times. Defaults to /custom/ca")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
@@ -126,6 +144,11 @@ func main() {
 	cfg.Burst = adapterClientRequestBurst
 	cfg.DisableCompression = disableCompression
 
+	if !enablePrometheusMetrics {
+		metricsAddr = "0"
+	}
+	metricscollector.NewMetricsCollectors(enablePrometheusMetrics, enableOpenTelemetryMetrics)
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
@@ -137,12 +160,14 @@ func main() {
 		Cache: ctrlcache.Options{
 			DefaultNamespaces: namespaces,
 		},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "operator.keda.sh",
-		LeaseDuration:          leaseDuration,
-		RenewDeadline:          renewDeadline,
-		RetryPeriod:            retryPeriod,
+		HealthProbeBindAddress:  probeAddr,
+		PprofBindAddress:        profilingAddr,
+		LeaderElection:          enableLeaderElection,
+		LeaderElectionID:        "operator.keda.sh",
+		LeaderElectionNamespace: kedautil.GetPodNamespace(),
+		LeaseDuration:           leaseDuration,
+		RenewDeadline:           renewDeadline,
+		RetryPeriod:             retryPeriod,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -193,13 +218,14 @@ func main() {
 	}
 
 	scaledHandler := scaling.NewScaleHandler(mgr.GetClient(), scaleClient, mgr.GetScheme(), globalHTTPTimeout, eventRecorder, secretInformer.Lister())
+	eventEmitter := eventemitter.NewEventEmitter(mgr.GetClient(), eventRecorder, k8sClusterName, secretInformer.Lister())
 
 	if err = (&kedacontrollers.ScaledObjectReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
-		Recorder:     eventRecorder,
 		ScaleClient:  scaleClient,
 		ScaleHandler: scaledHandler,
+		EventEmitter: eventEmitter,
 	}).SetupWithManager(mgr, controller.Options{
 		MaxConcurrentReconciles: scaledObjectMaxReconciles,
 	}); err != nil {
@@ -210,7 +236,7 @@ func main() {
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		GlobalHTTPTimeout: globalHTTPTimeout,
-		Recorder:          eventRecorder,
+		EventEmitter:      eventEmitter,
 		SecretsLister:     secretInformer.Lister(),
 		SecretsSynced:     secretInformer.Informer().HasSynced,
 	}).SetupWithManager(mgr, controller.Options{
@@ -220,17 +246,31 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&kedacontrollers.TriggerAuthenticationReconciler{
-		Client:        mgr.GetClient(),
-		EventRecorder: eventRecorder,
+		Client:       mgr.GetClient(),
+		EventHandler: eventEmitter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TriggerAuthentication")
 		os.Exit(1)
 	}
 	if err = (&kedacontrollers.ClusterTriggerAuthenticationReconciler{
-		Client:        mgr.GetClient(),
-		EventRecorder: eventRecorder,
+		Client:       mgr.GetClient(),
+		EventHandler: eventEmitter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterTriggerAuthentication")
+		os.Exit(1)
+	}
+	if err = (eventingcontrollers.NewCloudEventSourceReconciler(
+		mgr.GetClient(),
+		eventEmitter,
+	)).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "CloudEventSource")
+		os.Exit(1)
+	}
+	if err = (eventingcontrollers.NewClusterCloudEventSourceReconciler(
+		mgr.GetClient(),
+		eventEmitter,
+	)).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterCloudEventSource")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
@@ -252,6 +292,7 @@ func main() {
 			OperatorService:       operatorServiceName,
 			MetricsServerService:  metricsServerServiceName,
 			WebhookService:        webhooksServiceName,
+			K8sClusterDomain:      k8sClusterDomain,
 			CAName:                "KEDA",
 			CAOrganization:        "KEDAORG",
 			ValidatingWebhookName: validatingWebhookName,
@@ -266,6 +307,8 @@ func main() {
 	} else {
 		close(certReady)
 	}
+
+	kedautil.SetCACertDirs(caDirs)
 
 	grpcServer := metricsservice.NewGrpcServer(&scaledHandler, metricsServiceAddr, certDir, certReady)
 	if err := mgr.Add(&grpcServer); err != nil {

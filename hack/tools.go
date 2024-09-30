@@ -6,7 +6,8 @@ package tools
 
 import (
 	// Import code-generator to use in build tools
-	_ "github.com/golang/mock/mockgen"
+	_ "github.com/jstemmer/go-junit-report/v2"
+	_ "go.uber.org/mock/mockgen"
 	_ "google.golang.org/grpc/cmd/protoc-gen-go-grpc"
 	_ "google.golang.org/protobuf/cmd/protoc-gen-go"
 	_ "k8s.io/code-generator"

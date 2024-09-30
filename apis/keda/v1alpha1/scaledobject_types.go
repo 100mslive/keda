@@ -17,7 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
 	"reflect"
+	"strconv"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,6 +53,7 @@ type ScaledObject struct {
 
 const ScaledObjectOwnerAnnotation = "scaledobject.keda.sh/name"
 const ScaledObjectTransferHpaOwnershipAnnotation = "scaledobject.keda.sh/transfer-hpa-ownership"
+const ValidationsHpaOwnershipAnnotation = "validations.keda.sh/hpa-ownership"
 const PausedReplicasAnnotation = "autoscaling.keda.sh/paused-replicas"
 const PausedAnnotation = "autoscaling.keda.sh/paused"
 
@@ -74,6 +77,9 @@ const (
 
 	// Composite metric name used for scalingModifiers composite metric
 	CompositeMetricName string = "composite-metric"
+
+	defaultHPAMinReplicas int32 = 1
+	defaultHPAMaxReplicas int32 = 100
 )
 
 // ScaledObjectSpec is the spec for a ScaledObject resource
@@ -95,6 +101,8 @@ type ScaledObjectSpec struct {
 	Triggers []ScaleTriggers `json:"triggers"`
 	// +optional
 	Fallback *Fallback `json:"fallback,omitempty"`
+	// +optional
+	InitialCooldownPeriod int32 `json:"initialCooldownPeriod,omitempty"`
 }
 
 // Fallback is the spec for fallback options
@@ -117,6 +125,10 @@ type AdvancedConfig struct {
 type ScalingModifiers struct {
 	Formula string `json:"formula,omitempty"`
 	Target  string `json:"target,omitempty"`
+	// +optional
+	ActivationTarget string `json:"activationTarget,omitempty"`
+	// +optional
+	MetricType autoscalingv2.MetricTargetType `json:"metricType,omitempty"`
 }
 
 // HorizontalPodAutoscalerConfig specifies horizontal scale config
@@ -185,7 +197,12 @@ func (so *ScaledObject) GenerateIdentifier() string {
 	return GenerateIdentifier("ScaledObject", so.Namespace, so.Name)
 }
 
-// HasPausedAnnotition returns whether this ScaledObject has PausedAnnotation or PausedReplicasAnnotation
+func (so *ScaledObject) HasPausedReplicaAnnotation() bool {
+	_, pausedReplicasAnnotationFound := so.GetAnnotations()[PausedReplicasAnnotation]
+	return pausedReplicasAnnotationFound
+}
+
+// HasPausedAnnotation returns whether this ScaledObject has PausedAnnotation or PausedReplicasAnnotation
 func (so *ScaledObject) HasPausedAnnotation() bool {
 	_, pausedAnnotationFound := so.GetAnnotations()[PausedAnnotation]
 	_, pausedReplicasAnnotationFound := so.GetAnnotations()[PausedReplicasAnnotation]
@@ -199,11 +216,79 @@ func (so *ScaledObject) NeedToBePausedByAnnotation() bool {
 		return so.Status.PausedReplicaCount != nil
 	}
 
-	_, pausedAnnotationFound := so.GetAnnotations()[PausedAnnotation]
-	return pausedAnnotationFound
+	pausedAnnotationValue, pausedAnnotationFound := so.GetAnnotations()[PausedAnnotation]
+	if !pausedAnnotationFound {
+		return false
+	}
+	shouldPause, err := strconv.ParseBool(pausedAnnotationValue)
+	if err != nil {
+		// if annotation value is not a boolean, we assume user wants to pause the ScaledObject
+		return true
+	}
+	return shouldPause
 }
 
 // IsUsingModifiers determines whether scalingModifiers are defined or not
 func (so *ScaledObject) IsUsingModifiers() bool {
 	return so.Spec.Advanced != nil && !reflect.DeepEqual(so.Spec.Advanced.ScalingModifiers, ScalingModifiers{})
+}
+
+// getHPAMinReplicas returns MinReplicas based on definition in ScaledObject or default value if not defined
+func (so *ScaledObject) GetHPAMinReplicas() *int32 {
+	if so.Spec.MinReplicaCount != nil && *so.Spec.MinReplicaCount > 0 {
+		return so.Spec.MinReplicaCount
+	}
+	tmp := defaultHPAMinReplicas
+	return &tmp
+}
+
+// getHPAMaxReplicas returns MaxReplicas based on definition in ScaledObject or default value if not defined
+func (so *ScaledObject) GetHPAMaxReplicas() int32 {
+	if so.Spec.MaxReplicaCount != nil {
+		return *so.Spec.MaxReplicaCount
+	}
+	return defaultHPAMaxReplicas
+}
+
+// checkReplicaCountBoundsAreValid checks that Idle/Min/Max ReplicaCount defined in ScaledObject are correctly specified
+// i.e. that Min is not greater than Max or Idle greater or equal to Min
+func CheckReplicaCountBoundsAreValid(scaledObject *ScaledObject) error {
+	min := int32(0)
+	if scaledObject.Spec.MinReplicaCount != nil {
+		min = *scaledObject.GetHPAMinReplicas()
+	}
+	max := scaledObject.GetHPAMaxReplicas()
+
+	if min > max {
+		return fmt.Errorf("MinReplicaCount=%d must be less than MaxReplicaCount=%d", min, max)
+	}
+
+	if scaledObject.Spec.IdleReplicaCount != nil && *scaledObject.Spec.IdleReplicaCount >= min {
+		return fmt.Errorf("IdleReplicaCount=%d must be less than MinReplicaCount=%d", *scaledObject.Spec.IdleReplicaCount, min)
+	}
+
+	return nil
+}
+
+// CheckFallbackValid checks that the fallback supports scalers with an AverageValue metric target.
+// Consequently, it does not support CPU & memory scalers, or scalers targeting a Value metric type.
+func CheckFallbackValid(scaledObject *ScaledObject) error {
+	if scaledObject.Spec.Fallback == nil {
+		return nil
+	}
+
+	if scaledObject.Spec.Fallback.FailureThreshold < 0 || scaledObject.Spec.Fallback.Replicas < 0 {
+		return fmt.Errorf("FailureThreshold=%d & Replicas=%d must both be greater than or equal to 0",
+			scaledObject.Spec.Fallback.FailureThreshold, scaledObject.Spec.Fallback.Replicas)
+	}
+
+	for _, trigger := range scaledObject.Spec.Triggers {
+		if trigger.Type == cpuString || trigger.Type == memoryString {
+			return fmt.Errorf("type is %s , but fallback it is not supported by the CPU & memory scalers", trigger.Type)
+		}
+		if trigger.MetricType != autoscalingv2.AverageValueMetricType {
+			return fmt.Errorf("MetricType=%s, but Fallback can only be enabled for triggers with metric of type AverageValue", trigger.MetricType)
+		}
+	}
+	return nil
 }
