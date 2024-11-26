@@ -4,14 +4,9 @@ package kinesis
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
-	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	internalauth "github.com/aws/aws-sdk-go-v2/internal/auth"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
-	smithyendpoints "github.com/aws/smithy-go/endpoints"
 	"github.com/aws/smithy-go/middleware"
 	"github.com/aws/smithy-go/ptr"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
@@ -19,8 +14,9 @@ import (
 )
 
 // Lists the consumers registered to receive data from a stream using enhanced
-// fan-out, and provides information about each consumer. This operation has a
-// limit of 5 transactions per second per stream.
+// fan-out, and provides information about each consumer.
+//
+// This operation has a limit of 5 transactions per second per stream.
 func (c *Client) ListStreamConsumers(ctx context.Context, params *ListStreamConsumersInput, optFns ...func(*Options)) (*ListStreamConsumersOutput, error) {
 	if params == nil {
 		params = &ListStreamConsumersInput{}
@@ -39,9 +35,9 @@ func (c *Client) ListStreamConsumers(ctx context.Context, params *ListStreamCons
 type ListStreamConsumersInput struct {
 
 	// The ARN of the Kinesis data stream for which you want to list the registered
-	// consumers. For more information, see Amazon Resource Names (ARNs) and Amazon
-	// Web Services Service Namespaces (https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html#arn-syntax-kinesis-streams)
-	// .
+	// consumers. For more information, see [Amazon Resource Names (ARNs) and Amazon Web Services Service Namespaces].
+	//
+	// [Amazon Resource Names (ARNs) and Amazon Web Services Service Namespaces]: https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html#arn-syntax-kinesis-streams
 	//
 	// This member is required.
 	StreamARN *string
@@ -57,27 +53,39 @@ type ListStreamConsumersInput struct {
 	// consumers that are registered with the data stream, the response includes a
 	// pagination token named NextToken . You can specify this NextToken value in a
 	// subsequent call to ListStreamConsumers to list the next set of registered
-	// consumers. Don't specify StreamName or StreamCreationTimestamp if you specify
-	// NextToken because the latter unambiguously identifies the stream. You can
-	// optionally specify a value for the MaxResults parameter when you specify
-	// NextToken . If you specify a MaxResults value that is less than the number of
-	// consumers that the operation returns if you don't specify MaxResults , the
-	// response will contain a new NextToken value. You can use the new NextToken
+	// consumers.
+	//
+	// Don't specify StreamName or StreamCreationTimestamp if you specify NextToken
+	// because the latter unambiguously identifies the stream.
+	//
+	// You can optionally specify a value for the MaxResults parameter when you
+	// specify NextToken . If you specify a MaxResults value that is less than the
+	// number of consumers that the operation returns if you don't specify MaxResults ,
+	// the response will contain a new NextToken value. You can use the new NextToken
 	// value in a subsequent call to the ListStreamConsumers operation to list the
-	// next set of consumers. Tokens expire after 300 seconds. When you obtain a value
-	// for NextToken in the response to a call to ListStreamConsumers , you have 300
-	// seconds to use that value. If you specify an expired token in a call to
-	// ListStreamConsumers , you get ExpiredNextTokenException .
+	// next set of consumers.
+	//
+	// Tokens expire after 300 seconds. When you obtain a value for NextToken in the
+	// response to a call to ListStreamConsumers , you have 300 seconds to use that
+	// value. If you specify an expired token in a call to ListStreamConsumers , you
+	// get ExpiredNextTokenException .
 	NextToken *string
 
 	// Specify this input parameter to distinguish data streams that have the same
 	// name. For example, if you create a data stream and then delete it, and you later
 	// create another data stream with the same name, you can use this input parameter
-	// to specify which of the two streams you want to list the consumers for. You
-	// can't specify this parameter if you specify the NextToken parameter.
+	// to specify which of the two streams you want to list the consumers for.
+	//
+	// You can't specify this parameter if you specify the NextToken parameter.
 	StreamCreationTimestamp *time.Time
 
 	noSmithyDocumentSerde
+}
+
+func (in *ListStreamConsumersInput) bindEndpointParams(p *EndpointParameters) {
+
+	p.StreamARN = in.StreamARN
+	p.OperationType = ptr.String("control")
 }
 
 type ListStreamConsumersOutput struct {
@@ -91,11 +99,12 @@ type ListStreamConsumersOutput struct {
 	// registered consumers, the response includes a pagination token named NextToken .
 	// You can specify this NextToken value in a subsequent call to ListStreamConsumers
 	// to list the next set of registered consumers. For more information about the use
-	// of this pagination token when calling the ListStreamConsumers operation, see
-	// ListStreamConsumersInput$NextToken . Tokens expire after 300 seconds. When you
-	// obtain a value for NextToken in the response to a call to ListStreamConsumers ,
-	// you have 300 seconds to use that value. If you specify an expired token in a
-	// call to ListStreamConsumers , you get ExpiredNextTokenException .
+	// of this pagination token when calling the ListStreamConsumers operation, see ListStreamConsumersInput$NextToken.
+	//
+	// Tokens expire after 300 seconds. When you obtain a value for NextToken in the
+	// response to a call to ListStreamConsumers , you have 300 seconds to use that
+	// value. If you specify an expired token in a call to ListStreamConsumers , you
+	// get ExpiredNextTokenException .
 	NextToken *string
 
 	// Metadata pertaining to the operation's result.
@@ -105,6 +114,9 @@ type ListStreamConsumersOutput struct {
 }
 
 func (c *Client) addOperationListStreamConsumersMiddlewares(stack *middleware.Stack, options Options) (err error) {
+	if err := stack.Serialize.Add(&setOperationInputMiddleware{}, middleware.After); err != nil {
+		return err
+	}
 	err = stack.Serialize.Add(&awsAwsjson11_serializeOpListStreamConsumers{}, middleware.After)
 	if err != nil {
 		return err
@@ -113,34 +125,38 @@ func (c *Client) addOperationListStreamConsumersMiddlewares(stack *middleware.St
 	if err != nil {
 		return err
 	}
+	if err := addProtocolFinalizerMiddlewares(stack, options, "ListStreamConsumers"); err != nil {
+		return fmt.Errorf("add protocol finalizers: %v", err)
+	}
+
 	if err = addlegacyEndpointContextSetter(stack, options); err != nil {
 		return err
 	}
 	if err = addSetLoggerMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddClientRequestIDMiddleware(stack); err != nil {
+	if err = addClientRequestID(stack); err != nil {
 		return err
 	}
-	if err = smithyhttp.AddComputeContentLengthMiddleware(stack); err != nil {
+	if err = addComputeContentLength(stack); err != nil {
 		return err
 	}
 	if err = addResolveEndpointMiddleware(stack, options); err != nil {
 		return err
 	}
-	if err = v4.AddComputePayloadSHA256Middleware(stack); err != nil {
+	if err = addComputePayloadSHA256(stack); err != nil {
 		return err
 	}
-	if err = addRetryMiddlewares(stack, options); err != nil {
+	if err = addRetry(stack, options); err != nil {
 		return err
 	}
-	if err = addHTTPSignerV4Middleware(stack, options); err != nil {
+	if err = addRawResponseToMetadata(stack); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRawResponseToMetadata(stack); err != nil {
+	if err = addRecordResponseTiming(stack); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRecordResponseTiming(stack); err != nil {
+	if err = addSpanRetryLoop(stack, options); err != nil {
 		return err
 	}
 	if err = addClientUserAgent(stack, options); err != nil {
@@ -152,7 +168,13 @@ func (c *Client) addOperationListStreamConsumersMiddlewares(stack *middleware.St
 	if err = smithyhttp.AddCloseResponseBodyMiddleware(stack); err != nil {
 		return err
 	}
-	if err = addListStreamConsumersResolveEndpointMiddleware(stack, options); err != nil {
+	if err = addSetLegacyContextSigningOptionsMiddleware(stack); err != nil {
+		return err
+	}
+	if err = addTimeOffsetBuild(stack, c); err != nil {
+		return err
+	}
+	if err = addUserAgentRetryMode(stack, options); err != nil {
 		return err
 	}
 	if err = addOpListStreamConsumersValidationMiddleware(stack); err != nil {
@@ -161,7 +183,7 @@ func (c *Client) addOperationListStreamConsumersMiddlewares(stack *middleware.St
 	if err = stack.Initialize.Add(newServiceMetadataMiddleware_opListStreamConsumers(options.Region), middleware.Before); err != nil {
 		return err
 	}
-	if err = awsmiddleware.AddRecursionDetection(stack); err != nil {
+	if err = addRecursionDetection(stack); err != nil {
 		return err
 	}
 	if err = addRequestIDRetrieverMiddleware(stack); err != nil {
@@ -173,19 +195,23 @@ func (c *Client) addOperationListStreamConsumersMiddlewares(stack *middleware.St
 	if err = addRequestResponseLogging(stack, options); err != nil {
 		return err
 	}
-	if err = addendpointDisableHTTPSMiddleware(stack, options); err != nil {
+	if err = addDisableHTTPSMiddleware(stack, options); err != nil {
+		return err
+	}
+	if err = addSpanInitializeStart(stack); err != nil {
+		return err
+	}
+	if err = addSpanInitializeEnd(stack); err != nil {
+		return err
+	}
+	if err = addSpanBuildRequestStart(stack); err != nil {
+		return err
+	}
+	if err = addSpanBuildRequestEnd(stack); err != nil {
 		return err
 	}
 	return nil
 }
-
-// ListStreamConsumersAPIClient is a client that implements the
-// ListStreamConsumers operation.
-type ListStreamConsumersAPIClient interface {
-	ListStreamConsumers(context.Context, *ListStreamConsumersInput, ...func(*Options)) (*ListStreamConsumersOutput, error)
-}
-
-var _ ListStreamConsumersAPIClient = (*Client)(nil)
 
 // ListStreamConsumersPaginatorOptions is the paginator options for
 // ListStreamConsumers
@@ -253,6 +279,9 @@ func (p *ListStreamConsumersPaginator) NextPage(ctx context.Context, optFns ...f
 	}
 	params.MaxResults = limit
 
+	optFns = append([]func(*Options){
+		addIsPaginatorUserAgent,
+	}, optFns...)
 	result, err := p.client.ListStreamConsumers(ctx, &params, optFns...)
 	if err != nil {
 		return nil, err
@@ -272,143 +301,18 @@ func (p *ListStreamConsumersPaginator) NextPage(ctx context.Context, optFns ...f
 	return result, nil
 }
 
+// ListStreamConsumersAPIClient is a client that implements the
+// ListStreamConsumers operation.
+type ListStreamConsumersAPIClient interface {
+	ListStreamConsumers(context.Context, *ListStreamConsumersInput, ...func(*Options)) (*ListStreamConsumersOutput, error)
+}
+
+var _ ListStreamConsumersAPIClient = (*Client)(nil)
+
 func newServiceMetadataMiddleware_opListStreamConsumers(region string) *awsmiddleware.RegisterServiceMetadata {
 	return &awsmiddleware.RegisterServiceMetadata{
 		Region:        region,
 		ServiceID:     ServiceID,
-		SigningName:   "kinesis",
 		OperationName: "ListStreamConsumers",
 	}
-}
-
-type opListStreamConsumersResolveEndpointMiddleware struct {
-	EndpointResolver EndpointResolverV2
-	BuiltInResolver  builtInParameterResolver
-}
-
-func (*opListStreamConsumersResolveEndpointMiddleware) ID() string {
-	return "ResolveEndpointV2"
-}
-
-func (m *opListStreamConsumersResolveEndpointMiddleware) HandleSerialize(ctx context.Context, in middleware.SerializeInput, next middleware.SerializeHandler) (
-	out middleware.SerializeOutput, metadata middleware.Metadata, err error,
-) {
-	if awsmiddleware.GetRequiresLegacyEndpoints(ctx) {
-		return next.HandleSerialize(ctx, in)
-	}
-
-	req, ok := in.Request.(*smithyhttp.Request)
-	if !ok {
-		return out, metadata, fmt.Errorf("unknown transport type %T", in.Request)
-	}
-
-	input, ok := in.Parameters.(*ListStreamConsumersInput)
-	if !ok {
-		return out, metadata, fmt.Errorf("unknown transport type %T", in.Request)
-	}
-
-	if m.EndpointResolver == nil {
-		return out, metadata, fmt.Errorf("expected endpoint resolver to not be nil")
-	}
-
-	params := EndpointParameters{}
-
-	m.BuiltInResolver.ResolveBuiltIns(&params)
-
-	params.StreamARN = input.StreamARN
-
-	params.OperationType = ptr.String("control")
-
-	var resolvedEndpoint smithyendpoints.Endpoint
-	resolvedEndpoint, err = m.EndpointResolver.ResolveEndpoint(ctx, params)
-	if err != nil {
-		return out, metadata, fmt.Errorf("failed to resolve service endpoint, %w", err)
-	}
-
-	req.URL = &resolvedEndpoint.URI
-
-	for k := range resolvedEndpoint.Headers {
-		req.Header.Set(
-			k,
-			resolvedEndpoint.Headers.Get(k),
-		)
-	}
-
-	authSchemes, err := internalauth.GetAuthenticationSchemes(&resolvedEndpoint.Properties)
-	if err != nil {
-		var nfe *internalauth.NoAuthenticationSchemesFoundError
-		if errors.As(err, &nfe) {
-			// if no auth scheme is found, default to sigv4
-			signingName := "kinesis"
-			signingRegion := m.BuiltInResolver.(*builtInResolver).Region
-			ctx = awsmiddleware.SetSigningName(ctx, signingName)
-			ctx = awsmiddleware.SetSigningRegion(ctx, signingRegion)
-
-		}
-		var ue *internalauth.UnSupportedAuthenticationSchemeSpecifiedError
-		if errors.As(err, &ue) {
-			return out, metadata, fmt.Errorf(
-				"This operation requests signer version(s) %v but the client only supports %v",
-				ue.UnsupportedSchemes,
-				internalauth.SupportedSchemes,
-			)
-		}
-	}
-
-	for _, authScheme := range authSchemes {
-		switch authScheme.(type) {
-		case *internalauth.AuthenticationSchemeV4:
-			v4Scheme, _ := authScheme.(*internalauth.AuthenticationSchemeV4)
-			var signingName, signingRegion string
-			if v4Scheme.SigningName == nil {
-				signingName = "kinesis"
-			} else {
-				signingName = *v4Scheme.SigningName
-			}
-			if v4Scheme.SigningRegion == nil {
-				signingRegion = m.BuiltInResolver.(*builtInResolver).Region
-			} else {
-				signingRegion = *v4Scheme.SigningRegion
-			}
-			if v4Scheme.DisableDoubleEncoding != nil {
-				// The signer sets an equivalent value at client initialization time.
-				// Setting this context value will cause the signer to extract it
-				// and override the value set at client initialization time.
-				ctx = internalauth.SetDisableDoubleEncoding(ctx, *v4Scheme.DisableDoubleEncoding)
-			}
-			ctx = awsmiddleware.SetSigningName(ctx, signingName)
-			ctx = awsmiddleware.SetSigningRegion(ctx, signingRegion)
-			break
-		case *internalauth.AuthenticationSchemeV4A:
-			v4aScheme, _ := authScheme.(*internalauth.AuthenticationSchemeV4A)
-			if v4aScheme.SigningName == nil {
-				v4aScheme.SigningName = aws.String("kinesis")
-			}
-			if v4aScheme.DisableDoubleEncoding != nil {
-				// The signer sets an equivalent value at client initialization time.
-				// Setting this context value will cause the signer to extract it
-				// and override the value set at client initialization time.
-				ctx = internalauth.SetDisableDoubleEncoding(ctx, *v4aScheme.DisableDoubleEncoding)
-			}
-			ctx = awsmiddleware.SetSigningName(ctx, *v4aScheme.SigningName)
-			ctx = awsmiddleware.SetSigningRegion(ctx, v4aScheme.SigningRegionSet[0])
-			break
-		case *internalauth.AuthenticationSchemeNone:
-			break
-		}
-	}
-
-	return next.HandleSerialize(ctx, in)
-}
-
-func addListStreamConsumersResolveEndpointMiddleware(stack *middleware.Stack, options Options) error {
-	return stack.Serialize.Insert(&opListStreamConsumersResolveEndpointMiddleware{
-		EndpointResolver: options.EndpointResolverV2,
-		BuiltInResolver: &builtInResolver{
-			Region:       options.Region,
-			UseDualStack: options.EndpointOptions.UseDualStackEndpoint,
-			UseFIPS:      options.EndpointOptions.UseFIPSEndpoint,
-			Endpoint:     options.BaseEndpoint,
-		},
-	}, "ResolveEndpoint", middleware.After)
 }

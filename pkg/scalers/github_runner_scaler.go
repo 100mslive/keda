@@ -15,6 +15,7 @@ import (
 	v2 "k8s.io/api/autoscaling/v2"
 	"k8s.io/metrics/pkg/apis/external_metrics"
 
+	"github.com/kedacore/keda/v2/pkg/scalers/scalersconfig"
 	kedautil "github.com/kedacore/keda/v2/pkg/util"
 )
 
@@ -42,8 +43,9 @@ type githubRunnerMetadata struct {
 	personalAccessToken       *string
 	repos                     []string
 	labels                    []string
+	noDefaultLabels           bool
 	targetWorkflowQueueLength int64
-	scalerIndex               int
+	triggerIndex              int
 	applicationID             *int64
 	installationID            *int64
 	applicationKey            *string
@@ -325,7 +327,7 @@ type Job struct {
 }
 
 // NewGitHubRunnerScaler creates a new GitHub Runner Scaler
-func NewGitHubRunnerScaler(config *ScalerConfig) (Scaler, error) {
+func NewGitHubRunnerScaler(config *scalersconfig.ScalerConfig) (Scaler, error) {
 	httpClient := kedautil.CreateHTTPClient(config.GlobalHTTPTimeout, false)
 
 	metricType, err := GetMetricTargetType(config)
@@ -344,6 +346,7 @@ func NewGitHubRunnerScaler(config *ScalerConfig) (Scaler, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error creating GitHub App client: %w, \n appID: %d, instID: %d", err, meta.applicationID, meta.installationID)
 		}
+		hc.BaseURL = meta.githubAPIURL
 		httpClient = &http.Client{Transport: hc}
 	}
 
@@ -360,14 +363,18 @@ func getValueFromMetaOrEnv(key string, metadata map[string]string, env map[strin
 	if val, ok := metadata[key]; ok && val != "" {
 		return val, nil
 	} else if val, ok := metadata[key+"FromEnv"]; ok && val != "" {
-		return env[val], nil
+		if envVal, ok := env[val]; ok && envVal != "" {
+			return envVal, nil
+		}
+		return "", fmt.Errorf("%s %s env variable value is empty", key, val)
 	}
+
 	return "", fmt.Errorf("no %s given", key)
 }
 
 // getInt64ValueFromMetaOrEnv returns the value of the given key from the metadata or the environment variables
-func getInt64ValueFromMetaOrEnv(key string, config *ScalerConfig) (int64, error) {
-	sInt, err := getValueFromMetaOrEnv(key, config.TriggerMetadata, config.ResolvedEnv)
+func getInt64ValueFromMetaOrEnv(key string, metadata map[string]string, env map[string]string) (int64, error) {
+	sInt, err := getValueFromMetaOrEnv(key, metadata, env)
 	if err != nil {
 		return -1, fmt.Errorf("error parsing %s: %w", key, err)
 	}
@@ -379,7 +386,21 @@ func getInt64ValueFromMetaOrEnv(key string, config *ScalerConfig) (int64, error)
 	return goodInt, nil
 }
 
-func parseGitHubRunnerMetadata(config *ScalerConfig) (*githubRunnerMetadata, error) {
+// getInt64ValueFromMetaOrEnv returns the value of the given key from the metadata or the environment variables
+func getBoolValueFromMetaOrEnv(key string, metadata map[string]string, env map[string]string) (bool, error) {
+	sBool, err := getValueFromMetaOrEnv(key, metadata, env)
+	if err != nil {
+		return false, fmt.Errorf("error parsing %s: %w", key, err)
+	}
+
+	goodBool, err := strconv.ParseBool(sBool)
+	if err != nil {
+		return false, fmt.Errorf("error parsing %s: %w", key, err)
+	}
+	return goodBool, nil
+}
+
+func parseGitHubRunnerMetadata(config *scalersconfig.ScalerConfig) (*githubRunnerMetadata, error) {
 	meta := &githubRunnerMetadata{}
 	meta.targetWorkflowQueueLength = defaultTargetWorkflowQueueLength
 
@@ -395,7 +416,7 @@ func parseGitHubRunnerMetadata(config *ScalerConfig) (*githubRunnerMetadata, err
 		return nil, err
 	}
 
-	if val, err := getInt64ValueFromMetaOrEnv("targetWorkflowQueueLength", config); err == nil && val != -1 {
+	if val, err := getInt64ValueFromMetaOrEnv("targetWorkflowQueueLength", config.TriggerMetadata, config.ResolvedEnv); err == nil && val != -1 {
 		meta.targetWorkflowQueueLength = val
 	} else {
 		meta.targetWorkflowQueueLength = defaultTargetWorkflowQueueLength
@@ -403,6 +424,12 @@ func parseGitHubRunnerMetadata(config *ScalerConfig) (*githubRunnerMetadata, err
 
 	if val, err := getValueFromMetaOrEnv("labels", config.TriggerMetadata, config.ResolvedEnv); err == nil && val != "" {
 		meta.labels = strings.Split(val, ",")
+	}
+
+	if val, err := getBoolValueFromMetaOrEnv("noDefaultLabels", config.TriggerMetadata, config.ResolvedEnv); err == nil {
+		meta.noDefaultLabels = val
+	} else {
+		meta.noDefaultLabels = false
 	}
 
 	if val, err := getValueFromMetaOrEnv("repos", config.TriggerMetadata, config.ResolvedEnv); err == nil && val != "" {
@@ -432,22 +459,24 @@ func parseGitHubRunnerMetadata(config *ScalerConfig) (*githubRunnerMetadata, err
 		return nil, fmt.Errorf("no personalAccessToken or appKey given")
 	}
 
-	meta.scalerIndex = config.ScalerIndex
+	meta.triggerIndex = config.TriggerIndex
 
 	return meta, nil
 }
 
-func setupGitHubApp(config *ScalerConfig) (*int64, *int64, *string, error) {
+func setupGitHubApp(config *scalersconfig.ScalerConfig) (*int64, *int64, *string, error) {
 	var appID *int64
 	var instID *int64
 	var appKey *string
 
-	if val, err := getInt64ValueFromMetaOrEnv("applicationID", config); err == nil && val != -1 {
-		appID = &val
+	appIDVal, appIDErr := getInt64ValueFromMetaOrEnv("applicationID", config.TriggerMetadata, config.ResolvedEnv)
+	if appIDErr == nil && appIDVal != -1 {
+		appID = &appIDVal
 	}
 
-	if val, err := getInt64ValueFromMetaOrEnv("installationID", config); err == nil && val != -1 {
-		instID = &val
+	instIDVal, instIDErr := getInt64ValueFromMetaOrEnv("installationID", config.TriggerMetadata, config.ResolvedEnv)
+	if instIDErr == nil && instIDVal != -1 {
+		instID = &instIDVal
 	}
 
 	if val, ok := config.AuthParams["appKey"]; ok && val != "" {
@@ -456,7 +485,15 @@ func setupGitHubApp(config *ScalerConfig) (*int64, *int64, *string, error) {
 
 	if (appID != nil || instID != nil || appKey != nil) &&
 		(appID == nil || instID == nil || appKey == nil) {
-		return nil, nil, nil, fmt.Errorf("applicationID, installationID and applicationKey must be given")
+		if appIDErr != nil {
+			return nil, nil, nil, appIDErr
+		}
+
+		if instIDErr != nil {
+			return nil, nil, nil, instIDErr
+		}
+
+		return nil, nil, nil, fmt.Errorf("no applicationKey given")
 	}
 
 	return appID, instID, appKey, nil
@@ -468,31 +505,44 @@ func (s *githubRunnerScaler) getRepositories(ctx context.Context) ([]string, err
 		return s.metadata.repos, nil
 	}
 
-	var url string
-	switch s.metadata.runnerScope {
-	case ORG:
-		url = fmt.Sprintf("%s/orgs/%s/repos", s.metadata.githubAPIURL, s.metadata.owner)
-	case REPO:
-		url = fmt.Sprintf("%s/users/%s/repos", s.metadata.githubAPIURL, s.metadata.owner)
-	case ENT:
-		url = fmt.Sprintf("%s/orgs/%s/repos", s.metadata.githubAPIURL, s.metadata.owner)
-	default:
-		return nil, fmt.Errorf("runnerScope %s not supported", s.metadata.runnerScope)
-	}
-	body, _, err := getGithubRequest(ctx, url, s.metadata, s.httpClient)
-	if err != nil {
-		return nil, err
-	}
-
-	var repos []Repo
-	err = json.Unmarshal(body, &repos)
-	if err != nil {
-		return nil, err
-	}
-
+	page := 1
 	var repoList []string
-	for _, repo := range repos {
-		repoList = append(repoList, repo.Name)
+
+	for {
+		var url string
+		switch s.metadata.runnerScope {
+		case ORG:
+			url = fmt.Sprintf("%s/orgs/%s/repos?page=%s", s.metadata.githubAPIURL, s.metadata.owner, strconv.Itoa(page))
+		case REPO:
+			url = fmt.Sprintf("%s/users/%s/repos?page=%s", s.metadata.githubAPIURL, s.metadata.owner, strconv.Itoa(page))
+		case ENT:
+			url = fmt.Sprintf("%s/orgs/%s/repos?page=%s", s.metadata.githubAPIURL, s.metadata.owner, strconv.Itoa(page))
+		default:
+			return nil, fmt.Errorf("runnerScope %s not supported", s.metadata.runnerScope)
+		}
+
+		body, _, err := getGithubRequest(ctx, url, s.metadata, s.httpClient)
+		if err != nil {
+			return nil, err
+		}
+
+		var repos []Repo
+
+		err = json.Unmarshal(body, &repos)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, repo := range repos {
+			repoList = append(repoList, repo.Name)
+		}
+
+		// GitHub returned less than 30 repos per page, so consider no repos left
+		if len(repos) < 30 {
+			break
+		}
+
+		page++
 	}
 
 	return repoList, nil
@@ -542,7 +592,7 @@ func stripDeadRuns(allWfrs []WorkflowRuns) []WorkflowRun {
 	var filtered []WorkflowRun
 	for _, wfrs := range allWfrs {
 		for _, wfr := range wfrs.WorkflowRuns {
-			if wfr.Status == "queued" {
+			if wfr.Status == "queued" || wfr.Status == "in_progress" {
 				filtered = append(filtered, wfr)
 			}
 		}
@@ -596,9 +646,13 @@ func contains(s []string, e string) bool {
 }
 
 // canRunnerMatchLabels check Agent Label array will match runner label array
-func canRunnerMatchLabels(jobLabels []string, runnerLabels []string) bool {
+func canRunnerMatchLabels(jobLabels []string, runnerLabels []string, noDefaultLabels bool) bool {
+	allLabels := runnerLabels
+	if !noDefaultLabels {
+		allLabels = append(allLabels, reservedLabels...)
+	}
 	for _, jobLabel := range jobLabels {
-		if !contains(runnerLabels, jobLabel) && !contains(reservedLabels, jobLabel) {
+		if !contains(allLabels, jobLabel) {
 			return false
 		}
 	}
@@ -636,7 +690,7 @@ func (s *githubRunnerScaler) GetWorkflowQueueLength(ctx context.Context) (int64,
 			return -1, err
 		}
 		for _, job := range jobs {
-			if job.Status == "queued" && canRunnerMatchLabels(job.Labels, s.metadata.labels) {
+			if (job.Status == "queued" || job.Status == "in_progress") && canRunnerMatchLabels(job.Labels, s.metadata.labels, s.metadata.noDefaultLabels) {
 				queueCount++
 			}
 		}
@@ -661,7 +715,7 @@ func (s *githubRunnerScaler) GetMetricsAndActivity(ctx context.Context, metricNa
 func (s *githubRunnerScaler) GetMetricSpecForScaling(_ context.Context) []v2.MetricSpec {
 	externalMetric := &v2.ExternalMetricSource{
 		Metric: v2.MetricIdentifier{
-			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, kedautil.NormalizeString(fmt.Sprintf("github-runner-%s", s.metadata.owner))),
+			Name: GenerateMetricNameWithIndex(s.metadata.triggerIndex, kedautil.NormalizeString(fmt.Sprintf("github-runner-%s", s.metadata.owner))),
 		},
 		Target: GetMetricTarget(s.metricType, s.metadata.targetWorkflowQueueLength),
 	}
@@ -670,5 +724,8 @@ func (s *githubRunnerScaler) GetMetricSpecForScaling(_ context.Context) []v2.Met
 }
 
 func (s *githubRunnerScaler) Close(_ context.Context) error {
+	if s.httpClient != nil {
+		s.httpClient.CloseIdleConnections()
+	}
 	return nil
 }

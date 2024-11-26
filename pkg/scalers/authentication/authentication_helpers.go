@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -97,6 +98,12 @@ func GetAuthConfigs(triggerMetadata, authParams map[string]string) (out *AuthMet
 			out.Scopes = ParseScope(authParams["scope"])
 			out.ClientID = authParams["clientID"]
 			out.ClientSecret = authParams["clientSecret"]
+
+			v, err := ParseEndpointParams(authParams["endpointParams"])
+			if err != nil {
+				return nil, fmt.Errorf("incorrect value for endpointParams is given: %s", authParams["endpointParams"])
+			}
+			out.EndpointParams = v
 		default:
 			return nil, fmt.Errorf("incorrect value for authMode is given: %s", t)
 		}
@@ -128,6 +135,18 @@ func ParseScope(inputStr string) []string {
 		return scopes
 	}
 	return nil
+}
+
+// ParseEndpointParams parse OAuth endpoint params from URL-encoded query string.
+func ParseEndpointParams(inputStr string) (url.Values, error) {
+	v, err := url.ParseQuery(inputStr)
+	if err != nil {
+		return nil, err
+	}
+	if len(v) == 0 {
+		return nil, nil
+	}
+	return v, nil
 }
 
 func GetBearerToken(auth *AuthMeta) string {
@@ -192,16 +211,16 @@ func CreateHTTPRoundTripper(roundTripperType TransportType, auth *AuthMeta, conf
 		if auth != nil {
 			if auth.EnableBasicAuth {
 				rt = pConfig.NewBasicAuthRoundTripper(
-					auth.Username,
-					pConfig.Secret(auth.Password),
-					"", roundTripper,
+					pConfig.NewInlineSecret(auth.Username),
+					pConfig.NewInlineSecret(auth.Password),
+					roundTripper,
 				)
 			}
 
 			if auth.EnableBearerAuth {
 				rt = pConfig.NewAuthorizationCredentialsRoundTripper(
 					"Bearer",
-					pConfig.Secret(auth.BearerToken),
+					pConfig.NewInlineSecret(auth.BearerToken),
 					roundTripper,
 				)
 			}

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -95,6 +96,20 @@ func (b *MockBroker) SetHandlerByMap(handlerMap map[string]MockResponse) {
 			return nil
 		}
 		return mockResponse.For(req.body)
+	})
+}
+
+// SetHandlerFuncByMap defines mapping of Request types to RequestHandlerFunc. When a
+// request is received by the broker, it looks up the request type in the map
+// and invoke the found RequestHandlerFunc instance to generate an appropriate reply.
+func (b *MockBroker) SetHandlerFuncByMap(handlerMap map[string]requestHandlerFunc) {
+	fnMap := make(map[string]requestHandlerFunc)
+	for k, v := range handlerMap {
+		fnMap[k] = v
+	}
+	b.setHandler(func(req *request) (res encoderWithHeader) {
+		reqTypeName := reflect.TypeOf(req.body).Elem().Name()
+		return fnMap[reqTypeName](req)
 	})
 }
 
@@ -396,10 +411,29 @@ func NewMockBroker(t TestReporter, brokerID int32) *MockBroker {
 // NewMockBrokerAddr behaves like newMockBroker but listens on the address you give
 // it rather than just some ephemeral port.
 func NewMockBrokerAddr(t TestReporter, brokerID int32, addr string) *MockBroker {
-	listener, err := net.Listen("tcp", addr)
+	var (
+		listener net.Listener
+		err      error
+	)
+
+	// retry up to 20 times if address already in use (e.g., if replacing broker which hasn't cleanly shutdown)
+	for i := 0; i < 20; i++ {
+		listener, err = net.Listen("tcp", addr)
+		if err != nil {
+			if errors.Is(err, syscall.EADDRINUSE) {
+				Logger.Printf("*** mockbroker/%d waiting for %s (address already in use)", brokerID, addr)
+				time.Sleep(time.Millisecond * 100)
+				continue
+			}
+			t.Fatal(err)
+		}
+		break
+	}
+
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return NewMockBrokerListener(t, brokerID, listener)
 }
 

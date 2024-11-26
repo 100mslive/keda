@@ -35,13 +35,15 @@ import (
 )
 
 const (
-	certName                    = "tls.crt"
-	keyName                     = "tls.key"
-	caCertName                  = "ca.crt"
-	caKeyName                   = "ca.key"
-	rotationCheckFrequency      = 12 * time.Hour
-	defaultCertValidityDuration = 10 * 365 * 24 * time.Hour
-	lookaheadInterval           = 90 * 24 * time.Hour
+	defaultControllerName             = "cert-rotator"
+	defaultCertName                   = "tls.crt"
+	defaultKeyName                    = "tls.key"
+	caCertName                        = "ca.crt"
+	caKeyName                         = "ca.key"
+	defaultRotationCheckFrequency     = 12 * time.Hour
+	defaultCaCertValidityDuration     = 10 * 365 * 24 * time.Hour
+	defaultServerCertValidityDuration = 1 * 365 * 24 * time.Hour
+	defaultLookaheadInterval          = 90 * 24 * time.Hour
 )
 
 var crLog = logf.Log.WithName("cert-rotation")
@@ -50,13 +52,13 @@ var crLog = logf.Log.WithName("cert-rotation")
 type WebhookType int
 
 const (
-	// ValidatingWebhook indicates the webhook is a ValidatingWebhook.
+	// Validating indicates the webhook is a ValidatingWebhook.
 	Validating WebhookType = iota
-	// MutingWebhook indicates the webhook is a MutatingWebhook.
+	// Mutating indicates the webhook is a MutatingWebhook.
 	Mutating
-	// CRDConversionWebhook indicates the webhook is a conversion webhook.
+	// CRDConversion indicates the webhook is a conversion webhook.
 	CRDConversion
-	// APIServiceWebhook indicates the webhook is an extension API server.
+	// APIService indicates the webhook is an extension API server.
 	APIService
 	// ExternalDataProvider indicates the webhook is a Gatekeeper External Data Provider.
 	ExternalDataProvider
@@ -67,6 +69,8 @@ var (
 	_ manager.LeaderElectionRunnable = &CertRotator{}
 	_ manager.Runnable               = controllerWrapper{}
 	_ manager.LeaderElectionRunnable = controllerWrapper{}
+	_ manager.Runnable               = &cacheWrapper{}
+	_ manager.LeaderElectionRunnable = &cacheWrapper{}
 )
 
 type controllerWrapper struct {
@@ -75,6 +79,15 @@ type controllerWrapper struct {
 }
 
 func (cw controllerWrapper) NeedLeaderElection() bool {
+	return cw.needLeaderElection
+}
+
+type cacheWrapper struct {
+	cache.Cache
+	needLeaderElection bool
+}
+
+func (cw *cacheWrapper) NeedLeaderElection() bool {
 	return cw.needLeaderElection
 }
 
@@ -105,7 +118,7 @@ func AddRotator(mgr manager.Manager, cr *CertRotator) error {
 	if ns == "" {
 		return fmt.Errorf("invalid namespace for secret")
 	}
-	cache, err := addNamespacedCache(mgr, ns)
+	cache, err := addNamespacedCache(mgr, cr, ns)
 	if err != nil {
 		return fmt.Errorf("creating namespaced cache: %w", err)
 	}
@@ -121,6 +134,36 @@ func AddRotator(mgr manager.Manager, cr *CertRotator) error {
 			return err
 		}
 	}
+	if cr.controllerName == "" {
+		cr.controllerName = defaultControllerName
+	}
+	if cr.CertName == "" {
+		cr.CertName = defaultCertName
+	}
+
+	if cr.KeyName == "" {
+		cr.KeyName = defaultKeyName
+	}
+
+	if cr.CaCertDuration == time.Duration(0) {
+		cr.CaCertDuration = defaultCaCertValidityDuration
+	}
+
+	if cr.ServerCertDuration == time.Duration(0) {
+		cr.ServerCertDuration = defaultServerCertValidityDuration
+	}
+
+	if cr.LookaheadInterval == time.Duration(0) {
+		cr.LookaheadInterval = defaultLookaheadInterval
+	}
+
+	if cr.RotationCheckFrequency == time.Duration(0) {
+		cr.RotationCheckFrequency = defaultLookaheadInterval
+	}
+
+	if cr.ExtKeyUsages == nil {
+		cr.ExtKeyUsages = &[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+	}
 
 	reconciler := &ReconcileWH{
 		cache:                       cache,
@@ -132,8 +175,9 @@ func AddRotator(mgr manager.Manager, cr *CertRotator) error {
 		webhooks:                    cr.Webhooks,
 		needLeaderElection:          cr.RequireLeaderElection,
 		refreshCertIfNeededDelegate: cr.refreshCertIfNeeded,
+		fieldOwner:                  cr.FieldOwner,
 	}
-	if err := addController(mgr, reconciler); err != nil {
+	if err := addController(mgr, reconciler, cr.controllerName); err != nil {
 		return err
 	}
 	return nil
@@ -144,7 +188,7 @@ func AddRotator(mgr manager.Manager, cr *CertRotator) error {
 // but will still have cluster-wide visibility into cluster-scoped resources.
 // The cache will be started by the manager when it starts, and consumers should synchronize on
 // it using WaitForCacheSync().
-func addNamespacedCache(mgr manager.Manager, namespace string) (cache.Cache, error) {
+func addNamespacedCache(mgr manager.Manager, cr *CertRotator, namespace string) (cache.Cache, error) {
 	var namespaces map[string]cache.Config
 	if namespace != "" {
 		namespaces = map[string]cache.Config{
@@ -161,13 +205,15 @@ func addNamespacedCache(mgr manager.Manager, namespace string) (cache.Cache, err
 	if err != nil {
 		return nil, err
 	}
-	if err := mgr.Add(c); err != nil {
+	// Wrapping the cache to make sure it's also started when the manager
+	// hasn't been leader elected and CertRotator.RequireLeaderElection is false.
+	if err := mgr.Add(&cacheWrapper{Cache: c, needLeaderElection: cr.RequireLeaderElection}); err != nil {
 		return nil, fmt.Errorf("registering namespaced cache: %w", err)
 	}
 	return c, nil
 }
 
-// SyncingSource is a reader that needs syncing prior to being usable.
+// SyncingReader is a reader that needs syncing prior to being usable.
 type SyncingReader interface {
 	client.Reader
 	WaitForCacheSync(ctx context.Context) bool
@@ -178,19 +224,32 @@ type CertRotator struct {
 	reader SyncingReader
 	writer client.Writer
 
-	SecretKey              types.NamespacedName
-	CertDir                string
-	CAName                 string
-	CAOrganization         string
-	DNSName                string
-	ExtraDNSNames          []string
-	IsReady                chan struct{}
-	Webhooks               []WebhookInfo
+	SecretKey      types.NamespacedName
+	CertDir        string
+	CAName         string
+	CAOrganization string
+	DNSName        string
+	ExtraDNSNames  []string
+	IsReady        chan struct{}
+	Webhooks       []WebhookInfo
+	// FieldOwner is the optional fieldmanager of the webhook updated fields.
+	FieldOwner             string
 	RestartOnSecretRefresh bool
 	ExtKeyUsages           *[]x509.ExtKeyUsage
 	// RequireLeaderElection should be set to true if the CertRotator needs to
 	// be run in the leader election mode.
 	RequireLeaderElection bool
+	// CaCertDuration sets how long a CA cert will be valid for.
+	CaCertDuration time.Duration
+	// ServerCertDuration sets how long a server cert will be valid for.
+	ServerCertDuration time.Duration
+	// RotationCheckFrequency sets how often the rotation is executed
+	RotationCheckFrequency time.Duration
+	// LookaheadInterval sets how long before the certificate is renewed
+	LookaheadInterval time.Duration
+	// CertName and Keyname override certificate path
+	CertName string
+	KeyName  string
 
 	certsMounted    chan struct{}
 	certsNotMounted chan struct{}
@@ -200,8 +259,10 @@ type CertRotator struct {
 	// testNoBackgroundRotation doesn't actually start the rotator in the background.
 	// This should only be used for testing.
 	testNoBackgroundRotation bool
-	// caCertDuration sets how long a CA cert will be valid for.
-	caCertDuration time.Duration
+	// controllerName allows setting the controller name to register it multiple times
+	// fixing the new k8s check that produces 'controller with name cert-rotator already exists'
+	// This should only be used for testing.
+	controllerName string
 }
 
 func (cr *CertRotator) NeedLeaderElection() bool {
@@ -217,13 +278,6 @@ func (cr *CertRotator) Start(ctx context.Context) error {
 		return errors.New("failed waiting for reader to sync")
 	}
 
-	if cr.ExtKeyUsages == nil {
-		cr.ExtKeyUsages = &[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
-	}
-	if cr.caCertDuration == time.Duration(0) {
-		cr.caCertDuration = defaultCertValidityDuration
-	}
-
 	// explicitly rotate on the first round so that the certificate
 	// can be bootstrapped, otherwise manager exits before a cert can be written
 	crLog.Info("starting cert rotator controller")
@@ -237,7 +291,7 @@ func (cr *CertRotator) Start(ctx context.Context) error {
 	go cr.ensureCertsMounted()
 	go cr.ensureReady()
 
-	ticker := time.NewTicker(rotationCheckFrequency)
+	ticker := time.NewTicker(cr.RotationCheckFrequency)
 
 tickerLoop:
 	for {
@@ -284,7 +338,7 @@ func (cr *CertRotator) refreshCertIfNeeded() (bool, error) {
 			return true, nil
 		}
 		// make sure our reconciler is initialized on startup (either this or the above refreshCerts() will call this)
-		if !cr.validServerCert(secret.Data[caCertName], secret.Data[certName], secret.Data[keyName]) {
+		if !cr.validServerCert(secret.Data[caCertName], secret.Data[cr.CertName], secret.Data[cr.KeyName]) {
 			crLog.Info("refreshing server certs")
 			if err := cr.refreshCerts(false, secret); err != nil {
 				crLog.Error(err, "could not refresh server certs")
@@ -315,8 +369,8 @@ func (cr *CertRotator) refreshCerts(refreshCA bool, secret *corev1.Secret) error
 	var caArtifacts *KeyPairArtifacts
 	now := time.Now()
 	begin := now.Add(-1 * time.Hour)
-	end := now.Add(cr.caCertDuration)
 	if refreshCA {
+		end := now.Add(cr.CaCertDuration)
 		var err error
 		caArtifacts, err = cr.CreateCACert(begin, end)
 		if err != nil {
@@ -329,6 +383,7 @@ func (cr *CertRotator) refreshCerts(refreshCA bool, secret *corev1.Secret) error
 			return err
 		}
 	}
+	end := now.Add(cr.ServerCertDuration)
 	cert, key, err := cr.CreateCertPEM(caArtifacts, begin, end)
 	if err != nil {
 		return err
@@ -425,7 +480,7 @@ func injectCertToExternalDataProvider(externalDataProvider *unstructured.Unstruc
 }
 
 func (cr *CertRotator) writeSecret(cert, key []byte, caArtifacts *KeyPairArtifacts, secret *corev1.Secret) error {
-	populateSecret(cert, key, caArtifacts, secret)
+	populateSecret(cert, key, cr.CertName, cr.KeyName, caArtifacts, secret)
 	return cr.writer.Update(context.Background(), secret)
 }
 
@@ -437,7 +492,7 @@ type KeyPairArtifacts struct {
 	KeyPEM  []byte
 }
 
-func populateSecret(cert, key []byte, caArtifacts *KeyPairArtifacts, secret *corev1.Secret) {
+func populateSecret(cert, key []byte, certName string, keyName string, caArtifacts *KeyPairArtifacts, secret *corev1.Secret) {
 	if secret.Data == nil {
 		secret.Data = make(map[string][]byte)
 	}
@@ -563,12 +618,12 @@ func pemEncode(certificateDER []byte, key *rsa.PrivateKey) ([]byte, []byte, erro
 	return certBuf.Bytes(), keyBuf.Bytes(), nil
 }
 
-func lookaheadTime() time.Time {
-	return time.Now().Add(lookaheadInterval)
+func (cr *CertRotator) lookaheadTime() time.Time {
+	return time.Now().Add(cr.LookaheadInterval)
 }
 
 func (cr *CertRotator) validServerCert(caCert, cert, key []byte) bool {
-	valid, err := ValidCert(caCert, cert, key, cr.DNSName, cr.ExtKeyUsages, lookaheadTime())
+	valid, err := ValidCert(caCert, cert, key, cr.DNSName, cr.ExtKeyUsages, cr.lookaheadTime())
 	if err != nil {
 		return false
 	}
@@ -576,7 +631,7 @@ func (cr *CertRotator) validServerCert(caCert, cert, key []byte) bool {
 }
 
 func (cr *CertRotator) validCACert(cert, key []byte) bool {
-	valid, err := ValidCert(cert, cert, key, cr.CAName, nil, lookaheadTime())
+	valid, err := ValidCert(cert, cert, key, cr.CAName, nil, cr.lookaheadTime())
 	if err != nil {
 		return false
 	}
@@ -630,8 +685,8 @@ func ValidCert(caCert, cert, key []byte, dnsName string, keyUsages *[]x509.ExtKe
 	return true, nil
 }
 
-func reconcileSecretAndWebhookMapFunc(webhook WebhookInfo, r *ReconcileWH) func(ctx context.Context, object client.Object) []reconcile.Request {
-	return func(ctx context.Context, object client.Object) []reconcile.Request {
+func reconcileSecretAndWebhookMapFunc(webhook WebhookInfo, r *ReconcileWH) func(ctx context.Context, object *unstructured.Unstructured) []reconcile.Request {
+	return func(ctx context.Context, object *unstructured.Unstructured) []reconcile.Request {
 		whKey := types.NamespacedName{Name: webhook.Name}
 		if object.GetNamespace() != whKey.Namespace {
 			return nil
@@ -644,19 +699,15 @@ func reconcileSecretAndWebhookMapFunc(webhook WebhookInfo, r *ReconcileWH) func(
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func addController(mgr manager.Manager, r *ReconcileWH) error {
+func addController(mgr manager.Manager, r *ReconcileWH, controllerName string) error {
 	// Create a new controller
-	c, err := controller.NewUnmanaged("cert-rotator", mgr, controller.Options{Reconciler: r})
+	c, err := controller.NewUnmanaged(controllerName, mgr, controller.Options{Reconciler: r})
 	if err != nil {
-		return err
-	}
-	if err := mgr.Add(controllerWrapper{c, r.needLeaderElection}); err != nil {
 		return err
 	}
 
 	err = c.Watch(
-		source.Kind(r.cache, &corev1.Secret{}),
-		&handler.EnqueueRequestForObject{},
+		source.Kind(r.cache, &corev1.Secret{}, &handler.TypedEnqueueRequestForObject[*corev1.Secret]{}),
 	)
 	if err != nil {
 		return fmt.Errorf("watching Secrets: %w", err)
@@ -666,15 +717,15 @@ func addController(mgr manager.Manager, r *ReconcileWH) error {
 		wh := &unstructured.Unstructured{}
 		wh.SetGroupVersionKind(webhook.gvk())
 		err = c.Watch(
-			source.Kind(r.cache, wh),
-			handler.EnqueueRequestsFromMapFunc(reconcileSecretAndWebhookMapFunc(webhook, r)),
+			source.Kind(r.cache, wh, handler.TypedEnqueueRequestsFromMapFunc(reconcileSecretAndWebhookMapFunc(webhook, r))),
 		)
+
 		if err != nil {
 			return fmt.Errorf("watching webhook %s: %w", webhook.Name, err)
 		}
 	}
 
-	return nil
+	return mgr.Add(controllerWrapper{c, r.needLeaderElection})
 }
 
 var _ reconcile.Reconciler = &ReconcileWH{}
@@ -691,6 +742,7 @@ type ReconcileWH struct {
 	wasCAInjected               *atomic.Bool
 	needLeaderElection          bool
 	refreshCertIfNeededDelegate func() (bool, error)
+	fieldOwner                  string
 }
 
 // Reconcile reads that state of the cluster for a validatingwebhookconfiguration
@@ -785,7 +837,11 @@ func (r *ReconcileWH) ensureCerts(certPem []byte) error {
 			anyError = err
 			continue
 		}
-		if err := r.writer.Update(r.ctx, updatedResource); err != nil {
+		opts := []client.UpdateOption{}
+		if r.fieldOwner != "" {
+			opts = append(opts, client.FieldOwner(r.fieldOwner))
+		}
+		if err := r.writer.Update(r.ctx, updatedResource, opts...); err != nil {
 			log.Error(err, "Error updating webhook with certificate")
 			anyError = err
 			continue
@@ -797,7 +853,7 @@ func (r *ReconcileWH) ensureCerts(certPem []byte) error {
 // ensureCertsMounted ensure the cert files exist.
 func (cr *CertRotator) ensureCertsMounted() {
 	checkFn := func() (bool, error) {
-		certFile := cr.CertDir + "/" + certName
+		certFile := cr.CertDir + "/" + cr.CertName
 		_, err := os.Stat(certFile)
 		if err == nil {
 			return true, nil

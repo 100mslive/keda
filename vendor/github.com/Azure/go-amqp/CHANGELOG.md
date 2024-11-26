@@ -1,5 +1,43 @@
 # Release History
 
+## 1.1.0 (2024-08-20)
+
+### Features Added
+
+* ConnError, SessionError and LinkError now work with errors.As(), making it easier to write generalized error handling code that wants to deal with *amqp.Error's.
+
+## 1.0.5 (2024-03-04)
+
+### Bugs Fixed
+
+* Fixed an issue that could cause delays when parsing small frames.
+
+## 1.0.4 (2024-01-16)
+
+### Other Changes
+
+* A `Receiver`'s unsettled messages are tracked as a count (currently used for diagnostic purposes only).
+
+## 1.0.3 (2024-01-09)
+
+### Bugs Fixed
+
+* Fixed an issue that could cause a memory leak when settling messages across `Receiver` instances.
+
+## 1.0.2 (2023-09-05)
+
+### Bugs Fixed
+
+* Fixed an issue that could cause frames to be sent even when the provided `context.Context` was cancelled.
+* Fixed a potential hang in `Sender.Send()` that could happen in rare circumstances.
+* Ensure that `Sender`'s delivery count and link credit are updated when a transfer fails to send due to context cancellation/timeout.
+
+## 1.0.1 (2023-06-08)
+
+### Bugs Fixed
+
+* Fixed an issue that could cause links to terminate with error "received disposition frame with unknown link handle X".
+
 ## 1.0.0 (2023-05-04)
 
 ### Features Added

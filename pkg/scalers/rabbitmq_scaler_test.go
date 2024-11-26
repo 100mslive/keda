@@ -13,11 +13,14 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/kedacore/keda/v2/apis/keda/v1alpha1"
+	"github.com/kedacore/keda/v2/pkg/scalers/scalersconfig"
 	kedautil "github.com/kedacore/keda/v2/pkg/util"
 )
 
 const (
-	host = "myHostSecret"
+	host             = "myHostSecret"
+	rabbitMQUsername = "myUsernameSecret"
+	rabbitMQPassword = "myPasswordSecret"
 )
 
 type parseRabbitMQMetadataTestData struct {
@@ -31,7 +34,7 @@ type parseRabbitMQAuthParamTestData struct {
 	podIdentity      v1alpha1.AuthPodIdentity
 	authParams       map[string]string
 	isError          bool
-	enableTLS        bool
+	enableTLS        string
 	workloadIdentity bool
 }
 
@@ -42,7 +45,9 @@ type rabbitMQMetricIdentifier struct {
 }
 
 var sampleRabbitMqResolvedEnv = map[string]string{
-	host: "amqp://user:sercet@somehost.com:5236/vhost",
+	host:             "amqp://user:sercet@somehost.com:5236/vhost",
+	rabbitMQUsername: "user",
+	rabbitMQPassword: "Password",
 }
 
 var testRabbitMQMetadata = []parseRabbitMQMetadataTestData{
@@ -137,23 +142,35 @@ var testRabbitMQMetadata = []parseRabbitMQMetadataTestData{
 }
 
 var testRabbitMQAuthParamData = []parseRabbitMQAuthParamTestData{
-	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "ca": "caaa", "cert": "ceert", "key": "keey"}, false, true, false},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "ca": "caaa", "cert": "ceert", "key": "keey"}, false, rmqTLSEnable, false},
 	// success, TLS cert/key and assumed public CA
-	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "cert": "ceert", "key": "keey"}, false, true, false},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "cert": "ceert", "key": "keey"}, false, rmqTLSEnable, false},
 	// success, TLS cert/key + key password and assumed public CA
-	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "cert": "ceert", "key": "keey", "keyPassword": "keeyPassword"}, false, true, false},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "cert": "ceert", "key": "keey", "keyPassword": "keeyPassword"}, false, rmqTLSEnable, false},
 	// success, TLS CA only
-	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "ca": "caaa"}, false, true, false},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "ca": "caaa"}, false, rmqTLSEnable, false},
 	// failure, TLS missing cert
-	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "ca": "caaa", "key": "kee"}, true, true, false},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "ca": "caaa", "key": "kee"}, true, rmqTLSEnable, false},
 	// failure, TLS missing key
-	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "ca": "caaa", "cert": "ceert"}, true, true, false},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "enable", "ca": "caaa", "cert": "ceert"}, true, rmqTLSEnable, false},
 	// failure, TLS invalid
-	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "yes", "ca": "caaa", "cert": "ceert", "key": "kee"}, true, true, false},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"tls": "yes", "ca": "caaa", "cert": "ceert", "key": "kee"}, true, rmqTLSEnable, false},
+	// success, username and password
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"username": "user", "password": "PASSWORD"}, false, rmqTLSDisable, false},
+	// failure, username but no password
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"username": "user"}, true, rmqTLSDisable, false},
+	// failure, password but no username
+	{map[string]string{"queueName": "sample", "hostFromEnv": host}, v1alpha1.AuthPodIdentity{}, map[string]string{"password": "PASSWORD"}, true, rmqTLSDisable, false},
+	// success, username and password from env
+	{map[string]string{"queueName": "sample", "hostFromEnv": host, "usernameFromEnv": rabbitMQUsername, "passwordFromEnv": rabbitMQPassword}, v1alpha1.AuthPodIdentity{}, map[string]string{}, false, rmqTLSDisable, false},
+	// failure, username from env but not password
+	{map[string]string{"queueName": "sample", "hostFromEnv": host, "usernameFromEnv": rabbitMQUsername}, v1alpha1.AuthPodIdentity{}, map[string]string{}, true, rmqTLSDisable, false},
+	// failure, password from env but not username
+	{map[string]string{"queueName": "sample", "hostFromEnv": host, "passwordFromEnv": rabbitMQPassword}, v1alpha1.AuthPodIdentity{}, map[string]string{}, true, rmqTLSDisable, false},
 	// success, WorkloadIdentity
-	{map[string]string{"queueName": "sample", "hostFromEnv": host, "protocol": "http"}, v1alpha1.AuthPodIdentity{Provider: v1alpha1.PodIdentityProviderAzureWorkload, IdentityID: kedautil.StringPointer("client-id")}, map[string]string{"workloadIdentityResource": "rabbitmq-resource-id"}, false, false, true},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host, "protocol": "http"}, v1alpha1.AuthPodIdentity{Provider: v1alpha1.PodIdentityProviderAzureWorkload, IdentityID: kedautil.StringPointer("client-id")}, map[string]string{"workloadIdentityResource": "rabbitmq-resource-id"}, false, rmqTLSDisable, true},
 	// failure, WoekloadIdentity not supported for amqp
-	{map[string]string{"queueName": "sample", "hostFromEnv": host, "protocol": "amqp"}, v1alpha1.AuthPodIdentity{Provider: v1alpha1.PodIdentityProviderAzureWorkload, IdentityID: kedautil.StringPointer("client-id")}, map[string]string{"workloadIdentityResource": "rabbitmq-resource-id"}, true, false, false},
+	{map[string]string{"queueName": "sample", "hostFromEnv": host, "protocol": "amqp"}, v1alpha1.AuthPodIdentity{Provider: v1alpha1.PodIdentityProviderAzureWorkload, IdentityID: kedautil.StringPointer("client-id")}, map[string]string{"workloadIdentityResource": "rabbitmq-resource-id"}, true, rmqTLSDisable, false},
 }
 var rabbitMQMetricIdentifiers = []rabbitMQMetricIdentifier{
 	{&testRabbitMQMetadata[1], 0, "s0-rabbitmq-sample"},
@@ -162,7 +179,7 @@ var rabbitMQMetricIdentifiers = []rabbitMQMetricIdentifier{
 
 func TestRabbitMQParseMetadata(t *testing.T) {
 	for idx, testData := range testRabbitMQMetadata {
-		meta, err := parseRabbitMQMetadata(&ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: testData.metadata, AuthParams: testData.authParams})
+		meta, err := parseRabbitMQMetadata(&scalersconfig.ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: testData.metadata, AuthParams: testData.authParams})
 		if err != nil && !testData.isError {
 			t.Error("Expected success but got error", err)
 		}
@@ -174,8 +191,8 @@ func TestRabbitMQParseMetadata(t *testing.T) {
 			if err != nil && !testData.isError {
 				t.Errorf("Expect error but got success in test case %d", idx)
 			}
-			if boolVal != meta.unsafeSsl {
-				t.Errorf("Expect %t but got %t in test case %d", boolVal, meta.unsafeSsl, idx)
+			if boolVal != meta.UnsafeSsl {
+				t.Errorf("Expect %t but got %t in test case %d", boolVal, meta.UnsafeSsl, idx)
 			}
 		}
 	}
@@ -183,32 +200,32 @@ func TestRabbitMQParseMetadata(t *testing.T) {
 
 func TestRabbitMQParseAuthParamData(t *testing.T) {
 	for _, testData := range testRabbitMQAuthParamData {
-		metadata, err := parseRabbitMQMetadata(&ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: testData.metadata, AuthParams: testData.authParams, PodIdentity: testData.podIdentity})
+		metadata, err := parseRabbitMQMetadata(&scalersconfig.ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: testData.metadata, AuthParams: testData.authParams, PodIdentity: testData.podIdentity})
 		if err != nil && !testData.isError {
 			t.Error("Expected success but got error", err)
 		}
 		if testData.isError && err == nil {
 			t.Error("Expected error but got success")
 		}
-		if metadata != nil && metadata.enableTLS != testData.enableTLS {
-			t.Errorf("Expected enableTLS to be set to %v but got %v\n", testData.enableTLS, metadata.enableTLS)
+		if metadata != nil && metadata.EnableTLS != testData.enableTLS {
+			t.Errorf("Expected enableTLS to be set to %v but got %v\n", testData.enableTLS, metadata.EnableTLS)
 		}
-		if metadata != nil && metadata.enableTLS {
-			if metadata.ca != testData.authParams["ca"] {
-				t.Errorf("Expected ca to be set to %v but got %v\n", testData.authParams["ca"], metadata.enableTLS)
+		if metadata != nil && metadata.EnableTLS == rmqTLSEnable {
+			if metadata.Ca != testData.authParams["ca"] {
+				t.Errorf("Expected ca to be set to %v but got %v\n", testData.authParams["ca"], metadata.EnableTLS)
 			}
-			if metadata.cert != testData.authParams["cert"] {
-				t.Errorf("Expected cert to be set to %v but got %v\n", testData.authParams["cert"], metadata.cert)
+			if metadata.Cert != testData.authParams["cert"] {
+				t.Errorf("Expected cert to be set to %v but got %v\n", testData.authParams["cert"], metadata.Cert)
 			}
-			if metadata.key != testData.authParams["key"] {
-				t.Errorf("Expected key to be set to %v but got %v\n", testData.authParams["key"], metadata.key)
+			if metadata.Key != testData.authParams["key"] {
+				t.Errorf("Expected key to be set to %v but got %v\n", testData.authParams["key"], metadata.Key)
 			}
-			if metadata.keyPassword != testData.authParams["keyPassword"] {
-				t.Errorf("Expected key to be set to %v but got %v\n", testData.authParams["keyPassword"], metadata.key)
+			if metadata.KeyPassword != testData.authParams["keyPassword"] {
+				t.Errorf("Expected key to be set to %v but got %v\n", testData.authParams["keyPassword"], metadata.Key)
 			}
 		}
 		if metadata != nil && metadata.workloadIdentityClientID != "" && !testData.workloadIdentity {
-			t.Errorf("Expected workloadIdentity to be disabled but got %v as client ID and %v as resource\n", metadata.workloadIdentityClientID, metadata.workloadIdentityResource)
+			t.Errorf("Expected workloadIdentity to be disabled but got %v as client ID and %v as resource\n", metadata.workloadIdentityClientID, metadata.WorkloadIdentityResource)
 		}
 		if metadata != nil && metadata.workloadIdentityClientID == "" && testData.workloadIdentity {
 			t.Error("Expected workloadIdentity to be enabled but was not\n")
@@ -225,14 +242,14 @@ var testDefaultQueueLength = []parseRabbitMQMetadataTestData{
 
 func TestParseDefaultQueueLength(t *testing.T) {
 	for _, testData := range testDefaultQueueLength {
-		metadata, err := parseRabbitMQMetadata(&ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: testData.metadata, AuthParams: testData.authParams})
+		metadata, err := parseRabbitMQMetadata(&scalersconfig.ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: testData.metadata, AuthParams: testData.authParams})
 		switch {
 		case err != nil && !testData.isError:
 			t.Error("Expected success but got error", err)
 		case testData.isError && err == nil:
 			t.Error("Expected error but got success")
-		case metadata.value != defaultRabbitMQQueueLength:
-			t.Error("Expected default queueLength =", defaultRabbitMQQueueLength, "but got", metadata.value)
+		case metadata.Value != defaultRabbitMQQueueLength:
+			t.Error("Expected default queueLength =", defaultRabbitMQQueueLength, "but got", metadata.Value)
 		}
 	}
 }
@@ -335,7 +352,7 @@ func Test_getVhostAndPathFromURL(t *testing.T) {
 }
 
 func TestGetQueueInfo(t *testing.T) {
-	allTestData := []getQueueInfoTestData{}
+	var allTestData []getQueueInfoTestData
 	allTestData = append(allTestData, testQueueInfoTestDataSingleVhost...)
 	for _, testData := range testQueueInfoTestData {
 		for _, vhostAnsSubpathsData := range getVhostAndPathFromURLTestData {
@@ -377,7 +394,7 @@ func TestGetQueueInfo(t *testing.T) {
 		}
 
 		s, err := NewRabbitMQScaler(
-			&ScalerConfig{
+			&scalersconfig.ScalerConfig{
 				ResolvedEnv:       resolvedEnv,
 				TriggerMetadata:   metadata,
 				AuthParams:        map[string]string{},
@@ -477,7 +494,7 @@ var testRegexQueueInfoTestData = []getQueueInfoTestData{
 }
 
 func TestGetQueueInfoWithRegex(t *testing.T) {
-	allTestData := []getQueueInfoTestData{}
+	var allTestData []getQueueInfoTestData
 	for _, testData := range testRegexQueueInfoTestData {
 		for _, vhostAndSubpathsData := range getVhostAndPathFromURLTestData {
 			testData := testData
@@ -518,7 +535,7 @@ func TestGetQueueInfoWithRegex(t *testing.T) {
 		}
 
 		s, err := NewRabbitMQScaler(
-			&ScalerConfig{
+			&scalersconfig.ScalerConfig{
 				ResolvedEnv:       resolvedEnv,
 				TriggerMetadata:   metadata,
 				AuthParams:        map[string]string{},
@@ -563,7 +580,7 @@ var testRegexPageSizeTestData = []getRegexPageSizeTestData{
 }
 
 func TestGetPageSizeWithRegex(t *testing.T) {
-	allTestData := []getRegexPageSizeTestData{}
+	var allTestData []getRegexPageSizeTestData
 	for _, testData := range testRegexPageSizeTestData {
 		for _, vhostAndSubpathsData := range getVhostAndPathFromURLTestData {
 			testData := testData
@@ -602,7 +619,7 @@ func TestGetPageSizeWithRegex(t *testing.T) {
 		}
 
 		s, err := NewRabbitMQScaler(
-			&ScalerConfig{
+			&scalersconfig.ScalerConfig{
 				ResolvedEnv:       resolvedEnv,
 				TriggerMetadata:   metadata,
 				AuthParams:        map[string]string{},
@@ -629,7 +646,7 @@ func TestGetPageSizeWithRegex(t *testing.T) {
 
 func TestRabbitMQGetMetricSpecForScaling(t *testing.T) {
 	for _, testData := range rabbitMQMetricIdentifiers {
-		meta, err := parseRabbitMQMetadata(&ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: testData.metadataTestData.metadata, AuthParams: nil, ScalerIndex: testData.index})
+		meta, err := parseRabbitMQMetadata(&scalersconfig.ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: testData.metadataTestData.metadata, AuthParams: nil, TriggerIndex: testData.index})
 		if err != nil {
 			t.Fatal("Could not parse metadata:", err)
 		}
@@ -671,7 +688,7 @@ func TestRabbitMQAnonymizeRabbitMQError(t *testing.T) {
 		"hostFromEnv": host,
 		"protocol":    "http",
 	}
-	meta, err := parseRabbitMQMetadata(&ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: metadata, AuthParams: nil})
+	meta, err := parseRabbitMQMetadata(&scalersconfig.ScalerConfig{ResolvedEnv: sampleRabbitMqResolvedEnv, TriggerMetadata: metadata, AuthParams: nil})
 
 	if err != nil {
 		t.Fatalf("Error parsing metadata (%s)", err)
@@ -723,7 +740,7 @@ func TestRegexQueueMissingError(t *testing.T) {
 		}
 
 		s, err := NewRabbitMQScaler(
-			&ScalerConfig{
+			&scalersconfig.ScalerConfig{
 				ResolvedEnv:       resolvedEnv,
 				TriggerMetadata:   metadata,
 				AuthParams:        map[string]string{},
@@ -743,5 +760,18 @@ func TestRegexQueueMissingError(t *testing.T) {
 		if testData.isError && err == nil {
 			t.Error("Expected error but got success")
 		}
+	}
+}
+
+func TestConnectionName(t *testing.T) {
+	c := scalersconfig.ScalerConfig{
+		ScalableObjectNamespace: "test-namespace",
+		ScalableObjectName:      "test-name",
+	}
+
+	connectionName := connectionName(&c)
+
+	if connectionName != "keda-test-namespace-test-name" {
+		t.Error("Expected connection name to be keda-test-namespace-test-name but got", connectionName)
 	}
 }
