@@ -36,7 +36,6 @@ type KedaProvider struct {
 	defaults.DefaultExternalMetricsProvider
 
 	client client.Client
-	ctx    context.Context
 
 	grpcClient metricsservice.GrpcClient
 }
@@ -51,7 +50,6 @@ var (
 func NewProvider(ctx context.Context, adapterLogger logr.Logger, client client.Client, grpcClient metricsservice.GrpcClient) provider.ExternalMetricsProvider {
 	provider := &KedaProvider{
 		client:     client,
-		ctx:        ctx,
 		grpcClient: grpcClient,
 	}
 	logger = adapterLogger.WithName("provider")
@@ -88,7 +86,8 @@ func (p *KedaProvider) GetExternalMetric(ctx context.Context, namespace string, 
 	// Get Metrics from Metrics Service gRPC Server
 	if !p.grpcClient.WaitForConnectionReady(ctx, logger) {
 		grpcClientConnected = false
-		logger.Error(fmt.Errorf("timeout while waiting to establish gRPC connection to KEDA Metrics Service server"), "timeout", "server", p.grpcClient.GetServerURL())
+		err := fmt.Errorf("timeout while waiting to establish gRPC connection to KEDA Metrics Service server")
+		logger.Error(err, "timeout", "server", p.grpcClient.GetServerURL())
 		return nil, err
 	}
 	if !grpcClientConnected {

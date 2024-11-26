@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"os"
 
+	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	appsv1 "k8s.io/api/apps/v1"
 	apimetrics "k8s.io/apiserver/pkg/endpoints/metrics"
@@ -52,48 +54,35 @@ type Adapter struct {
 	Message string
 }
 
+// https://github.com/kedacore/keda/issues/5732
+//
+//nolint:staticcheck // SA1019: klogr.New is deprecated.
 var logger = klogr.New().WithName("keda_metrics_adapter")
 
 var (
-	adapterClientRequestQPS   float32
-	adapterClientRequestBurst int
-	metricsAPIServerPort      int
-	disableCompression        bool
-	metricsServiceAddr        string
+	adapterClientRequestQPS     float32
+	adapterClientRequestBurst   int
+	metricsAPIServerPort        int
+	disableCompression          bool
+	metricsServiceAddr          string
+	profilingAddr               string
+	metricsServiceGRPCAuthority string
 )
 
-func (a *Adapter) makeProvider(ctx context.Context) (provider.ExternalMetricsProvider, <-chan struct{}, error) {
+func (a *Adapter) makeProvider(ctx context.Context) (provider.ExternalMetricsProvider, error) {
 	scheme := scheme.Scheme
 	if err := appsv1.SchemeBuilder.AddToScheme(scheme); err != nil {
 		logger.Error(err, "failed to add apps/v1 scheme to runtime scheme")
-		return nil, nil, fmt.Errorf("failed to add apps/v1 scheme to runtime scheme (%s)", err)
+		return nil, fmt.Errorf("failed to add apps/v1 scheme to runtime scheme (%s)", err)
 	}
 	if err := kedav1alpha1.SchemeBuilder.AddToScheme(scheme); err != nil {
 		logger.Error(err, "failed to add keda scheme to runtime scheme")
-		return nil, nil, fmt.Errorf("failed to add keda scheme to runtime scheme (%s)", err)
+		return nil, fmt.Errorf("failed to add keda scheme to runtime scheme (%s)", err)
 	}
 	namespaces, err := kedautil.GetWatchNamespaces()
 	if err != nil {
 		logger.Error(err, "failed to get watch namespace")
-		return nil, nil, fmt.Errorf("failed to get watch namespace (%s)", err)
-	}
-
-	leaseDuration, err := kedautil.ResolveOsEnvDuration("KEDA_METRICS_LEADER_ELECTION_LEASE_DURATION")
-	if err != nil {
-		logger.Error(err, "invalid KEDA_METRICS_LEADER_ELECTION_LEASE_DURATION")
-		return nil, nil, fmt.Errorf("invalid KEDA_METRICS_LEADER_ELECTION_LEASE_DURATION (%s)", err)
-	}
-
-	renewDeadline, err := kedautil.ResolveOsEnvDuration("KEDA_METRICS_LEADER_ELECTION_RENEW_DEADLINE")
-	if err != nil {
-		logger.Error(err, "Invalid KEDA_METRICS_LEADER_ELECTION_RENEW_DEADLINE")
-		return nil, nil, fmt.Errorf("invalid KEDA_METRICS_LEADER_ELECTION_RENEW_DEADLINE (%s)", err)
-	}
-
-	retryPeriod, err := kedautil.ResolveOsEnvDuration("KEDA_METRICS_LEADER_ELECTION_RETRY_PERIOD")
-	if err != nil {
-		logger.Error(err, "Invalid KEDA_METRICS_LEADER_ELECTION_RETRY_PERIOD")
-		return nil, nil, fmt.Errorf("invalid KEDA_METRICS_LEADER_ELECTION_RETRY_PERIOD (%s)", err)
+		return nil, fmt.Errorf("failed to get watch namespace (%s)", err)
 	}
 
 	// Get a config to talk to the apiserver
@@ -101,6 +90,8 @@ func (a *Adapter) makeProvider(ctx context.Context) (provider.ExternalMetricsPro
 	cfg.QPS = adapterClientRequestQPS
 	cfg.Burst = adapterClientRequestBurst
 	cfg.DisableCompression = disableCompression
+
+	clientMetrics := getMetricInterceptor()
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Metrics: server.Options{
@@ -110,30 +101,26 @@ func (a *Adapter) makeProvider(ctx context.Context) (provider.ExternalMetricsPro
 		Cache: ctrlcache.Options{
 			DefaultNamespaces: namespaces,
 		},
-		LeaseDuration: leaseDuration,
-		RenewDeadline: renewDeadline,
-		RetryPeriod:   retryPeriod,
+		PprofBindAddress: profilingAddr,
 	})
 	if err != nil {
 		logger.Error(err, "failed to setup manager")
-		return nil, nil, err
+		return nil, err
 	}
 
 	logger.Info("Connecting Metrics Service gRPC client to the server", "address", metricsServiceAddr)
-	grpcClient, err := metricsservice.NewGrpcClient(metricsServiceAddr, a.SecureServing.ServerCert.CertDirectory)
+	grpcClient, err := metricsservice.NewGrpcClient(metricsServiceAddr, a.SecureServing.ServerCert.CertDirectory, metricsServiceGRPCAuthority, clientMetrics)
 	if err != nil {
 		logger.Error(err, "error connecting Metrics Service gRPC client to the server", "address", metricsServiceAddr)
-		return nil, nil, err
+		return nil, err
 	}
-	stopCh := make(chan struct{})
 	go func() {
 		if err := mgr.Start(ctx); err != nil {
 			logger.Error(err, "controller-runtime encountered an error")
-			stopCh <- struct{}{}
-			close(stopCh)
+			os.Exit(1)
 		}
 	}()
-	return kedaprovider.NewProvider(ctx, logger, mgr.GetClient(), *grpcClient), stopCh, nil
+	return kedaprovider.NewProvider(ctx, logger, mgr.GetClient(), *grpcClient), nil
 }
 
 // getMetricHandler returns a http handler that exposes metrics from controller-runtime and apiserver
@@ -154,11 +141,35 @@ func getMetricHandler() http.HandlerFunc {
 	}
 }
 
+// getMetricInterceptor returns a metrics inceptor that records metrics between the adapter and opertaor
+func getMetricInterceptor() *grpcprom.ClientMetrics {
+	metricsNamespace := "keda_internal_metricsservice"
+
+	counterNamespace := func(o *prometheus.CounterOpts) {
+		o.Namespace = metricsNamespace
+	}
+
+	histogramNamespace := func(o *prometheus.HistogramOpts) {
+		o.Namespace = metricsNamespace
+	}
+
+	clientMetrics := grpcprom.NewClientMetrics(
+		grpcprom.WithClientHandlingTimeHistogram(
+			grpcprom.WithHistogramBuckets([]float64{0.001, 0.01, 0.1, 0.3, 0.6, 1, 3, 6, 9, 20, 30, 60, 90, 120}),
+			histogramNamespace,
+		),
+		grpcprom.WithClientCounterOptions(counterNamespace),
+	)
+	legacyregistry.Registerer().MustRegister(clientMetrics)
+
+	return clientMetrics
+}
+
 // RunMetricsServer runs a http listener and handles the /metrics endpoint
 // this is needed to consolidate apiserver and controller-runtime metrics
 // we have to use a separate http server & can't rely on the controller-runtime implementation
 // because apiserver doesn't provide a way to register metrics to other prometheus registries
-func RunMetricsServer(ctx context.Context, stopCh <-chan struct{}) {
+func RunMetricsServer(ctx context.Context) {
 	h := getMetricHandler()
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", h)
@@ -179,9 +190,7 @@ func RunMetricsServer(ctx context.Context, stopCh <-chan struct{}) {
 	}()
 
 	go func() {
-		<-stopCh
-		logger.Info("Shutting down the /metrics server gracefully...")
-
+		<-ctx.Done()
 		if err := server.Shutdown(ctx); err != nil {
 			logger.Error(err, "http server shutdown error")
 		}
@@ -229,7 +238,9 @@ func main() {
 	cmd.Flags().StringVar(&cmd.Message, "msg", "starting adapter...", "startup message")
 	cmd.Flags().AddGoFlagSet(flag.CommandLine) // make sure we get the klog flags
 	cmd.Flags().IntVar(&metricsAPIServerPort, "port", 8080, "Set the port for the metrics API server")
-	cmd.Flags().StringVar(&metricsServiceAddr, "metrics-service-address", generateDefaultMetricsServiceAddr(), "The address of the gRPRC Metrics Service Server.")
+	cmd.Flags().StringVar(&metricsServiceAddr, "metrics-service-address", generateDefaultMetricsServiceAddr(), "The address of the GRPC Metrics Service Server.")
+	cmd.Flags().StringVar(&metricsServiceGRPCAuthority, "metrics-service-grpc-authority", "", "Host Authority override for the Metrics Service if the Host Authority is not the same as the address used for the GRPC Metrics Service Server.")
+	cmd.Flags().StringVar(&profilingAddr, "profiling-bind-address", "", "The address the profiling would be exposed on.")
 	cmd.Flags().Float32Var(&adapterClientRequestQPS, "kube-api-qps", 20.0, "Set the QPS rate for throttling requests sent to the apiserver")
 	cmd.Flags().IntVar(&adapterClientRequestBurst, "kube-api-burst", 30, "Set the burst for throttling requests sent to the apiserver")
 	cmd.Flags().BoolVar(&disableCompression, "disable-compression", true, "Disable response compression for k8s restAPI in client-go. ")
@@ -245,7 +256,13 @@ func main() {
 		return
 	}
 
-	kedaProvider, stopCh, err := cmd.makeProvider(ctx)
+	err = kedautil.ConfigureMaxProcs(logger)
+	if err != nil {
+		logger.Error(err, "failed to set max procs")
+		return
+	}
+
+	kedaProvider, err := cmd.makeProvider(ctx)
 	if err != nil {
 		logger.Error(err, "making provider")
 		return
@@ -254,9 +271,9 @@ func main() {
 
 	logger.Info(cmd.Message)
 
-	RunMetricsServer(ctx, stopCh)
+	RunMetricsServer(ctx)
 
-	if err = cmd.Run(stopCh); err != nil {
+	if err = cmd.Run(ctx); err != nil {
 		return
 	}
 }

@@ -3,13 +3,13 @@ package scalers
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/go-logr/logr"
 	"github.com/redis/go-redis/v9"
 	v2 "k8s.io/api/autoscaling/v2"
 	"k8s.io/metrics/pkg/apis/external_metrics"
 
+	"github.com/kedacore/keda/v2/pkg/scalers/scalersconfig"
 	"github.com/kedacore/keda/v2/pkg/util"
 )
 
@@ -22,16 +22,16 @@ type redisHmsScaler struct {
 }
 
 type redisHmsMetadata struct {
-	mapValue           int64
-	activationMapValue int64
-	mapName            string
-	databaseIndex      int
-	connectionInfo     redisConnectionInfo
-	scalerIndex        int
+	MapValue           int64               `keda:"name=mapValue,       order=triggerMetadata, optional, default=5"`
+	ActivationMapValue int64               `keda:"name=activationMapValue,       order=triggerMetadata, optional"`
+	MapName            string              `keda:"name=mapName,       order=triggerMetadata"`
+	DatabaseIndex      int                 `keda:"name=databaseIndex,       order=triggerMetadata, optional"`
+	ConnectionInfo     redisConnectionInfo `keda:"optional"`
+	triggerIndex       int
 }
 
 // NewRedisHMSScaler creates a new redisHMSScaler
-func NewRedisHMSScaler(ctx context.Context, config *ScalerConfig) (Scaler, error) {
+func NewRedisHMSScaler(ctx context.Context, config *scalersconfig.ScalerConfig) (Scaler, error) {
 	luaScript := `
 local mapName = KEYS[1]
 
@@ -68,32 +68,24 @@ return 0
 
 	logger := InitializeLogger(config, "redis_hms_scaler")
 
+	meta, err := parseRedisHmsMetadata(config)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing redis metadata: %w", err)
+	}
+
 	isCluster := config.TriggerMetadata["cluster"] == "true"
 	isSentinel := config.TriggerMetadata["sentinel"] == "true"
 	if isCluster {
-		meta, err := parseRedisHmsMetadata(config, parseRedisClusterAddress)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing redis metadata: %w", err)
-		}
 		return createClusteredRedisHmsScaler(ctx, meta, luaScript, metricType, logger)
 	} else if isSentinel {
-		meta, err := parseRedisHmsMetadata(config, parseRedisSentinelAddress)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing redis metadata: %w", err)
-		}
 		return createSentinelRedisHmsScaler(ctx, meta, luaScript, metricType, logger)
-	}
-
-	meta, err := parseRedisHmsMetadata(config, parseRedisAddress)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing redis metadata: %w", err)
 	}
 
 	return createRedisHmsScaler(ctx, meta, luaScript, metricType, logger)
 }
 
 func createClusteredRedisHmsScaler(ctx context.Context, meta *redisHmsMetadata, script string, metricType v2.MetricTargetType, logger logr.Logger) (Scaler, error) {
-	client, err := getRedisClusterClient(ctx, meta.connectionInfo)
+	client, err := getRedisClusterClient(ctx, meta.ConnectionInfo)
 	if err != nil {
 		return nil, fmt.Errorf("connection to redis cluster failed: %w", err)
 	}
@@ -107,7 +99,7 @@ func createClusteredRedisHmsScaler(ctx context.Context, meta *redisHmsMetadata, 
 	}
 
 	calcFn := func(ctx context.Context) (int64, error) {
-		cmd := client.Eval(ctx, script, []string{meta.mapName})
+		cmd := client.Eval(ctx, script, []string{meta.MapName})
 		if cmd.Err() != nil {
 			return -1, cmd.Err()
 		}
@@ -125,7 +117,7 @@ func createClusteredRedisHmsScaler(ctx context.Context, meta *redisHmsMetadata, 
 }
 
 func createSentinelRedisHmsScaler(ctx context.Context, meta *redisHmsMetadata, script string, metricType v2.MetricTargetType, logger logr.Logger) (Scaler, error) {
-	client, err := getRedisSentinelClient(ctx, meta.connectionInfo, meta.databaseIndex)
+	client, err := getRedisSentinelClient(ctx, meta.ConnectionInfo, meta.DatabaseIndex)
 	if err != nil {
 		return nil, fmt.Errorf("connection to redis sentinel failed: %w", err)
 	}
@@ -134,7 +126,7 @@ func createSentinelRedisHmsScaler(ctx context.Context, meta *redisHmsMetadata, s
 }
 
 func createRedisHmsScaler(ctx context.Context, meta *redisHmsMetadata, script string, metricType v2.MetricTargetType, logger logr.Logger) (Scaler, error) {
-	client, err := getRedisClient(ctx, meta.connectionInfo, meta.databaseIndex)
+	client, err := getRedisClient(ctx, meta.ConnectionInfo, meta.DatabaseIndex)
 	if err != nil {
 		return nil, fmt.Errorf("connection to redis failed: %w", err)
 	}
@@ -152,7 +144,7 @@ func createRedisHmsScalerWithClient(client *redis.Client, meta *redisHmsMetadata
 	}
 
 	calcValFn := func(ctx context.Context) (int64, error) {
-		cmd := client.Eval(ctx, script, []string{meta.mapName})
+		cmd := client.Eval(ctx, script, []string{meta.MapName})
 		if cmd.Err() != nil {
 			return -1, cmd.Err()
 		}
@@ -169,54 +161,14 @@ func createRedisHmsScalerWithClient(client *redis.Client, meta *redisHmsMetadata
 	}
 }
 
-func parseRedisHmsMetadata(config *ScalerConfig, parserFn redisAddressParser) (*redisHmsMetadata, error) {
-	connInfo, err := parserFn(config.TriggerMetadata, config.ResolvedEnv, config.AuthParams)
-	if err != nil {
-		return nil, err
-	}
-	meta := redisHmsMetadata{
-		connectionInfo: connInfo,
+func parseRedisHmsMetadata(config *scalersconfig.ScalerConfig) (*redisHmsMetadata, error) {
+	meta := &redisHmsMetadata{}
+	if err := config.TypedConfig(meta); err != nil {
+		return nil, fmt.Errorf("error parsing redis metadata: %w", err)
 	}
 
-	err = parseTLSConfigIntoConnectionInfo(config, &meta.connectionInfo)
-	if err != nil {
-		return nil, err
-	}
-
-	meta.mapValue = defaultListLength
-	if val, ok := config.TriggerMetadata["mapValue"]; ok {
-		v, err := strconv.ParseInt(val, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("mapValue parsing error: %w", err)
-		}
-		meta.mapValue = v
-	}
-
-	meta.activationMapValue = defaultActivationListLength
-	if val, ok := config.TriggerMetadata["activationMapValue"]; ok {
-		v, err := strconv.ParseInt(val, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("activationMapValue parsing error %w", err)
-		}
-		meta.activationMapValue = v
-	}
-
-	if val, ok := config.TriggerMetadata["mapName"]; ok {
-		meta.mapName = val
-	} else {
-		return nil, ErrRedisNoListName
-	}
-
-	meta.databaseIndex = defaultDBIdx
-	if val, ok := config.TriggerMetadata["databaseIndex"]; ok {
-		dbIndex, err := strconv.ParseInt(val, 10, 32)
-		if err != nil {
-			return nil, fmt.Errorf("databaseIndex: parsing error %w", err)
-		}
-		meta.databaseIndex = int(dbIndex)
-	}
-	meta.scalerIndex = config.ScalerIndex
-	return &meta, nil
+	meta.triggerIndex = config.TriggerIndex
+	return meta, nil
 }
 
 func (s *redisHmsScaler) Close(context.Context) error {
@@ -225,12 +177,12 @@ func (s *redisHmsScaler) Close(context.Context) error {
 
 // GetMetricSpecForScaling returns the metric spec for the HPA
 func (s *redisHmsScaler) GetMetricSpecForScaling(context.Context) []v2.MetricSpec {
-	metricName := util.NormalizeString(fmt.Sprintf("redis-hms-%s", s.metadata.mapName))
+	metricName := util.NormalizeString(fmt.Sprintf("redis-hms-%s", s.metadata.MapName))
 	externalMetric := &v2.ExternalMetricSource{
 		Metric: v2.MetricIdentifier{
-			Name: GenerateMetricNameWithIndex(s.metadata.scalerIndex, metricName),
+			Name: GenerateMetricNameWithIndex(s.metadata.triggerIndex, metricName),
 		},
-		Target: GetMetricTarget(s.metricType, s.metadata.mapValue),
+		Target: GetMetricTarget(s.metricType, s.metadata.MapValue),
 	}
 	metricSpec := v2.MetricSpec{
 		External: externalMetric, Type: externalMetricType,

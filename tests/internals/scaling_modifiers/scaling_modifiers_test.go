@@ -6,6 +6,7 @@ package scaling_modifiers_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
@@ -123,6 +124,10 @@ spec:
         - secretRef:
             name: {{.SecretName}}
         imagePullPolicy: Always
+        readinessProbe:
+          httpGet:
+            path: /api/value
+            port: 8080
 `
 	soFallbackTemplate = `
 apiVersion: keda.sh/v1alpha1
@@ -143,18 +148,18 @@ spec:
     scalingModifiers:
       formula: metrics_api + kw_trig
       target: '2'
+      activationTarget: '2'
   pollingInterval: 5
   cooldownPeriod: 5
   minReplicaCount: 0
   maxReplicaCount: 10
   fallback:
     replicas: 5
-    failureThreshold: 1
+    failureThreshold: 3
   triggers:
   - type: metrics-api
     name: metrics_api
     metadata:
-      targetValue: "2"
       url: "{{.MetricsServerEndpoint}}"
       valueLocation: 'value'
       method: "query"
@@ -164,7 +169,48 @@ spec:
     name: kw_trig
     metadata:
       podSelector: pod=workload-test
-      value: '1'
+`
+
+	soComplexFormula = `
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{.ScaledObject}}
+  namespace: {{.TestNamespace}}
+  labels:
+    app: {{.DeploymentName}}
+spec:
+  scaleTargetRef:
+    name: {{.DeploymentName}}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 5
+    scalingModifiers:
+      formula: "count([kw_trig,metrics_api],{#>1}) > 1 ? 5 : 0"
+      target: '2'
+      activationTarget: '2'
+  pollingInterval: 5
+  cooldownPeriod: 5
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  fallback:
+    replicas: 5
+    failureThreshold: 3
+  triggers:
+  - type: metrics-api
+    name: metrics_api
+    metadata:
+      url: "{{.MetricsServerEndpoint}}"
+      valueLocation: 'value'
+      method: "query"
+    authenticationRef:
+      name: {{.TriggerAuthName}}
+  - type: kubernetes-workload
+    name: kw_trig
+    metadata:
+      podSelector: pod=workload-test
 `
 
 	workloadDeploymentTemplate = `
@@ -230,19 +276,29 @@ func TestScalingModifiers(t *testing.T) {
 	data, templates := getTemplateData()
 	CreateKubernetesResources(t, kc, namespace, data, templates)
 
+	// we ensure that the metrics api server is up and ready
+	assert.True(t, WaitForDeploymentReplicaReadyCount(t, kc, metricsServerDeploymentName, namespace, 1, 60, 2),
+		"replica count should be 1 after 1 minute")
+
 	testFormula(t, kc, data)
 
-	templates = append(templates, Template{Name: "soFallbackTemplate", Config: soFallbackTemplate})
+	templates = append(templates, Template{Name: "soComplexFormula", Config: soComplexFormula})
 	DeleteKubernetesResources(t, namespace, data, templates)
 }
 
 func testFormula(t *testing.T, kc *kubernetes.Clientset, data templateData) {
 	t.Log("--- testFormula ---")
+
+	// formula simply adds 2 metrics together (0+2=2; activationTarget = 2 -> replicas should be 0)
+	KubectlApplyWithTemplate(t, data, "soFallbackTemplate", soFallbackTemplate)
+	data.MetricValue = 0
+	KubectlReplaceWithTemplate(t, data, "updateMetricsTemplate", updateMetricsTemplate)
+	AssertReplicaCountNotChangeDuringTimePeriod(t, kc, deploymentName, namespace, 0, 60)
+
 	// formula simply adds 2 metrics together (3+2=5; target = 2 -> 5/2 replicas should be 3)
 	data.MetricValue = 3
-	KubectlApplyWithTemplate(t, data, "updateMetricsTemplate", updateMetricsTemplate)
+	KubectlReplaceWithTemplate(t, data, "updateMetricsTemplate", updateMetricsTemplate)
 
-	KubectlApplyWithTemplate(t, data, "soFallbackTemplate", soFallbackTemplate)
 	_, err := ExecuteCommand(fmt.Sprintf("kubectl scale deployment/depl-workload-base --replicas=2 -n %s", namespace))
 	assert.NoErrorf(t, err, "cannot scale workload deployment - %s", err)
 
@@ -251,22 +307,46 @@ func testFormula(t *testing.T, kc *kubernetes.Clientset, data templateData) {
 	assert.True(t, WaitForDeploymentReplicaReadyCount(t, kc, deploymentName, namespace, 3, 12, 10),
 		"replica count should be %d after 2 minutes", 3)
 
-	// apply fallback fallback
+	// apply fallback
 	_, err = ExecuteCommand(fmt.Sprintf("kubectl scale deployment/%s --replicas=0 -n %s", metricsServerDeploymentName, namespace))
 	assert.NoErrorf(t, err, "cannot scale metricsServer deployment - %s", err)
 
 	assert.True(t, WaitForDeploymentReplicaReadyCount(t, kc, deploymentName, namespace, 5, 12, 10),
 		"replica count should be %d after 2 minutes", 5)
+	time.Sleep(45 * time.Second) // waiting for passing failureThreshold
+	AssertReplicaCountNotChangeDuringTimePeriod(t, kc, deploymentName, namespace, 5, 60)
 
 	// ensure state returns to normal after error resolved and triggers are healthy
 	_, err = ExecuteCommand(fmt.Sprintf("kubectl scale deployment/%s --replicas=1 -n %s", metricsServerDeploymentName, namespace))
 	assert.NoErrorf(t, err, "cannot scale metricsServer deployment - %s", err)
 
+	// we ensure that the metrics api server is up and ready
+	assert.True(t, WaitForDeploymentReplicaReadyCount(t, kc, metricsServerDeploymentName, namespace, 1, 60, 2),
+		"replica count should be 1 after 1 minute")
+
 	data.MetricValue = 2
-	KubectlApplyWithTemplate(t, data, "updateMetricsTemplate", updateMetricsTemplate)
+	KubectlReplaceWithTemplate(t, data, "updateMetricsTemplate", updateMetricsTemplate)
 	// 2+2=4; target = 2 -> 4/2 replicas should be 2
 	assert.True(t, WaitForDeploymentReplicaReadyCount(t, kc, deploymentName, namespace, 2, 12, 10),
 		"replica count should be %d after 2 minutes", 2)
+
+	data.MetricValue = 0
+	KubectlReplaceWithTemplate(t, data, "updateMetricsTemplate", updateMetricsTemplate)
+
+	// apply new SO
+	KubectlApplyWithTemplate(t, data, "soComplexFormula", soComplexFormula)
+
+	// formula has count() which needs atleast 2 metrics to have value over 1 to scale up
+	// now should be 0
+	assert.True(t, WaitForDeploymentReplicaReadyCount(t, kc, deploymentName, namespace, 0, 12, 10),
+		"replica count should be %d after 2 minutes", 0)
+
+	data.MetricValue = 2
+	KubectlReplaceWithTemplate(t, data, "updateMetricsTemplate", updateMetricsTemplate)
+
+	// 5//2 = 3
+	assert.True(t, WaitForDeploymentReplicaReadyCount(t, kc, deploymentName, namespace, 3, 12, 10),
+		"replica count should be %d after 2 minutes", 3)
 }
 
 func getTemplateData() (templateData, []Template) {

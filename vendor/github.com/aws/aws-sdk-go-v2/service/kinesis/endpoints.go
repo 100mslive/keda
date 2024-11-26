@@ -8,15 +8,20 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
+	internalConfig "github.com/aws/aws-sdk-go-v2/internal/configsources"
+	"github.com/aws/aws-sdk-go-v2/internal/endpoints"
 	"github.com/aws/aws-sdk-go-v2/internal/endpoints/awsrulesfn"
 	internalendpoints "github.com/aws/aws-sdk-go-v2/service/kinesis/internal/endpoints"
+	smithyauth "github.com/aws/smithy-go/auth"
 	smithyendpoints "github.com/aws/smithy-go/endpoints"
 	"github.com/aws/smithy-go/endpoints/private/rulesfn"
 	"github.com/aws/smithy-go/middleware"
 	"github.com/aws/smithy-go/ptr"
+	"github.com/aws/smithy-go/tracing"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -195,70 +200,29 @@ func resolveEndpointResolverV2(options *Options) {
 	}
 }
 
-// Utility function to aid with translating pseudo-regions to classical regions
-// with the appropriate setting indicated by the pseudo-region
-func mapPseudoRegion(pr string) (region string, fips aws.FIPSEndpointState) {
-	const fipsInfix = "-fips-"
-	const fipsPrefix = "fips-"
-	const fipsSuffix = "-fips"
-
-	if strings.Contains(pr, fipsInfix) ||
-		strings.Contains(pr, fipsPrefix) ||
-		strings.Contains(pr, fipsSuffix) {
-		region = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(
-			pr, fipsInfix, "-"), fipsPrefix, ""), fipsSuffix, "")
-		fips = aws.FIPSEndpointStateEnabled
-	} else {
-		region = pr
+func resolveBaseEndpoint(cfg aws.Config, o *Options) {
+	if cfg.BaseEndpoint != nil {
+		o.BaseEndpoint = cfg.BaseEndpoint
 	}
 
-	return region, fips
+	_, g := os.LookupEnv("AWS_ENDPOINT_URL")
+	_, s := os.LookupEnv("AWS_ENDPOINT_URL_KINESIS")
+
+	if g && !s {
+		return
+	}
+
+	value, found, err := internalConfig.ResolveServiceBaseEndpoint(context.Background(), "Kinesis", cfg.ConfigSources)
+	if found && err == nil {
+		o.BaseEndpoint = &value
+	}
 }
 
-// builtInParameterResolver is the interface responsible for resolving BuiltIn
-// values during the sourcing of EndpointParameters
-type builtInParameterResolver interface {
-	ResolveBuiltIns(*EndpointParameters) error
-}
-
-// builtInResolver resolves modeled BuiltIn values using only the members defined
-// below.
-type builtInResolver struct {
-	// The AWS region used to dispatch the request.
-	Region string
-
-	// Sourced BuiltIn value in a historical enabled or disabled state.
-	UseDualStack aws.DualStackEndpointState
-
-	// Sourced BuiltIn value in a historical enabled or disabled state.
-	UseFIPS aws.FIPSEndpointState
-
-	// Base endpoint that can potentially be modified during Endpoint resolution.
-	Endpoint *string
-}
-
-// Invoked at runtime to resolve BuiltIn Values. Only resolution code specific to
-// each BuiltIn value is generated.
-func (b *builtInResolver) ResolveBuiltIns(params *EndpointParameters) error {
-
-	region, _ := mapPseudoRegion(b.Region)
-	if len(region) == 0 {
-		return fmt.Errorf("Could not resolve AWS::Region")
-	} else {
-		params.Region = aws.String(region)
+func bindRegion(region string) *string {
+	if region == "" {
+		return nil
 	}
-	if b.UseDualStack == aws.DualStackEndpointStateEnabled {
-		params.UseDualStack = aws.Bool(true)
-	} else {
-		params.UseDualStack = aws.Bool(false)
-	}
-	if b.UseFIPS == aws.FIPSEndpointStateEnabled {
-		params.UseFIPS = aws.Bool(true)
-	} else {
-		params.UseFIPS = aws.Bool(false)
-	}
-	params.Endpoint = b.Endpoint
-	return nil
+	return aws.String(endpoints.MapFIPSRegion(region))
 }
 
 // EndpointParameters provides the parameters that influence how endpoints are
@@ -314,6 +278,11 @@ type EndpointParameters struct {
 	//
 	// Parameter is required.
 	ConsumerARN *string
+
+	// The ARN of the Kinesis resource
+	//
+	// Parameter is required.
+	ResourceARN *string
 }
 
 // ValidateRequired validates required parameters are set.
@@ -340,6 +309,17 @@ func (p EndpointParameters) WithDefaults() EndpointParameters {
 		p.UseFIPS = ptr.Bool(false)
 	}
 	return p
+}
+
+type stringSlice []string
+
+func (s stringSlice) Get(i int) *string {
+	if i < 0 || i >= len(s) {
+		return nil
+	}
+
+	v := s[i]
+	return &v
 }
 
 // EndpointResolverV2 provides the interface for resolving service endpoints.
@@ -728,6 +708,184 @@ func (r *resolver) ResolveEndpoint(
 			}
 		}
 	}
+	if exprVal := params.ResourceARN; exprVal != nil {
+		_ResourceARN := *exprVal
+		_ = _ResourceARN
+		if !(params.Endpoint != nil) {
+			if exprVal := params.Region; exprVal != nil {
+				_Region := *exprVal
+				_ = _Region
+				if exprVal := awsrulesfn.GetPartition(_Region); exprVal != nil {
+					_PartitionResult := *exprVal
+					_ = _PartitionResult
+					if !(_PartitionResult.Name == "aws-iso") {
+						if !(_PartitionResult.Name == "aws-iso-b") {
+							if exprVal := awsrulesfn.ParseARN(_ResourceARN); exprVal != nil {
+								_arn := *exprVal
+								_ = _arn
+								if rulesfn.IsValidHostLabel(_arn.AccountId, false) {
+									if rulesfn.IsValidHostLabel(_arn.Region, false) {
+										if _arn.Service == "kinesis" {
+											if exprVal := _arn.ResourceId.Get(0); exprVal != nil {
+												_arnType := *exprVal
+												_ = _arnType
+												if !(_arnType == "") {
+													if _arnType == "stream" {
+														if _PartitionResult.Name == _arn.Partition {
+															if exprVal := params.OperationType; exprVal != nil {
+																_OperationType := *exprVal
+																_ = _OperationType
+																if _UseFIPS == true {
+																	if _UseDualStack == true {
+																		if _PartitionResult.SupportsFIPS == true {
+																			if _PartitionResult.SupportsDualStack == true {
+																				uriString := func() string {
+																					var out strings.Builder
+																					out.WriteString("https://")
+																					out.WriteString(_arn.AccountId)
+																					out.WriteString(".")
+																					out.WriteString(_OperationType)
+																					out.WriteString("-kinesis-fips.")
+																					out.WriteString(_Region)
+																					out.WriteString(".")
+																					out.WriteString(_PartitionResult.DualStackDnsSuffix)
+																					return out.String()
+																				}()
+
+																				uri, err := url.Parse(uriString)
+																				if err != nil {
+																					return endpoint, fmt.Errorf("Failed to parse uri: %s", uriString)
+																				}
+
+																				return smithyendpoints.Endpoint{
+																					URI:     *uri,
+																					Headers: http.Header{},
+																				}, nil
+																			}
+																			return endpoint, fmt.Errorf("endpoint rule error, %s", "DualStack is enabled, but this partition does not support DualStack.")
+																		}
+																		return endpoint, fmt.Errorf("endpoint rule error, %s", "FIPS is enabled, but this partition does not support FIPS.")
+																	}
+																}
+																if _UseFIPS == true {
+																	if _PartitionResult.SupportsFIPS == true {
+																		uriString := func() string {
+																			var out strings.Builder
+																			out.WriteString("https://")
+																			out.WriteString(_arn.AccountId)
+																			out.WriteString(".")
+																			out.WriteString(_OperationType)
+																			out.WriteString("-kinesis-fips.")
+																			out.WriteString(_Region)
+																			out.WriteString(".")
+																			out.WriteString(_PartitionResult.DnsSuffix)
+																			return out.String()
+																		}()
+
+																		uri, err := url.Parse(uriString)
+																		if err != nil {
+																			return endpoint, fmt.Errorf("Failed to parse uri: %s", uriString)
+																		}
+
+																		return smithyendpoints.Endpoint{
+																			URI:     *uri,
+																			Headers: http.Header{},
+																		}, nil
+																	}
+																	return endpoint, fmt.Errorf("endpoint rule error, %s", "FIPS is enabled but this partition does not support FIPS")
+																}
+																if _UseDualStack == true {
+																	if _PartitionResult.SupportsDualStack == true {
+																		uriString := func() string {
+																			var out strings.Builder
+																			out.WriteString("https://")
+																			out.WriteString(_arn.AccountId)
+																			out.WriteString(".")
+																			out.WriteString(_OperationType)
+																			out.WriteString("-kinesis.")
+																			out.WriteString(_Region)
+																			out.WriteString(".")
+																			out.WriteString(_PartitionResult.DualStackDnsSuffix)
+																			return out.String()
+																		}()
+
+																		uri, err := url.Parse(uriString)
+																		if err != nil {
+																			return endpoint, fmt.Errorf("Failed to parse uri: %s", uriString)
+																		}
+
+																		return smithyendpoints.Endpoint{
+																			URI:     *uri,
+																			Headers: http.Header{},
+																		}, nil
+																	}
+																	return endpoint, fmt.Errorf("endpoint rule error, %s", "DualStack is enabled but this partition does not support DualStack")
+																}
+																uriString := func() string {
+																	var out strings.Builder
+																	out.WriteString("https://")
+																	out.WriteString(_arn.AccountId)
+																	out.WriteString(".")
+																	out.WriteString(_OperationType)
+																	out.WriteString("-kinesis.")
+																	out.WriteString(_Region)
+																	out.WriteString(".")
+																	out.WriteString(_PartitionResult.DnsSuffix)
+																	return out.String()
+																}()
+
+																uri, err := url.Parse(uriString)
+																if err != nil {
+																	return endpoint, fmt.Errorf("Failed to parse uri: %s", uriString)
+																}
+
+																return smithyendpoints.Endpoint{
+																	URI:     *uri,
+																	Headers: http.Header{},
+																}, nil
+															}
+															return endpoint, fmt.Errorf("endpoint rule error, %s", "Operation Type is not set. Please contact service team for resolution.")
+														}
+														return endpoint, fmt.Errorf("endpoint rule error, %s", func() string {
+															var out strings.Builder
+															out.WriteString("Partition: ")
+															out.WriteString(_arn.Partition)
+															out.WriteString(" from ARN doesn't match with partition name: ")
+															out.WriteString(_PartitionResult.Name)
+															out.WriteString(".")
+															return out.String()
+														}())
+													}
+													return endpoint, fmt.Errorf("endpoint rule error, %s", func() string {
+														var out strings.Builder
+														out.WriteString("Invalid ARN: Kinesis ARNs don't support `")
+														out.WriteString(_arnType)
+														out.WriteString("` arn types.")
+														return out.String()
+													}())
+												}
+											}
+											return endpoint, fmt.Errorf("endpoint rule error, %s", "Invalid ARN: No ARN type specified")
+										}
+										return endpoint, fmt.Errorf("endpoint rule error, %s", func() string {
+											var out strings.Builder
+											out.WriteString("Invalid ARN: The ARN was not for the Kinesis service, found: ")
+											out.WriteString(_arn.Service)
+											out.WriteString(".")
+											return out.String()
+										}())
+									}
+									return endpoint, fmt.Errorf("endpoint rule error, %s", "Invalid ARN: Invalid region.")
+								}
+								return endpoint, fmt.Errorf("endpoint rule error, %s", "Invalid ARN: Invalid account id.")
+							}
+							return endpoint, fmt.Errorf("endpoint rule error, %s", "Invalid ARN: Failed to parse ARN.")
+						}
+					}
+				}
+			}
+		}
+	}
 	if exprVal := params.Endpoint; exprVal != nil {
 		_Endpoint := *exprVal
 		_ = _Endpoint
@@ -783,8 +941,8 @@ func (r *resolver) ResolveEndpoint(
 				}
 			}
 			if _UseFIPS == true {
-				if true == _PartitionResult.SupportsFIPS {
-					if "aws-us-gov" == _PartitionResult.Name {
+				if _PartitionResult.SupportsFIPS == true {
+					if _PartitionResult.Name == "aws-us-gov" {
 						uriString := func() string {
 							var out strings.Builder
 							out.WriteString("https://kinesis.")
@@ -847,32 +1005,6 @@ func (r *resolver) ResolveEndpoint(
 				}
 				return endpoint, fmt.Errorf("endpoint rule error, %s", "DualStack is enabled but this partition does not support DualStack")
 			}
-			if _Region == "us-gov-east-1" {
-				uriString := "https://kinesis.us-gov-east-1.amazonaws.com"
-
-				uri, err := url.Parse(uriString)
-				if err != nil {
-					return endpoint, fmt.Errorf("Failed to parse uri: %s", uriString)
-				}
-
-				return smithyendpoints.Endpoint{
-					URI:     *uri,
-					Headers: http.Header{},
-				}, nil
-			}
-			if _Region == "us-gov-west-1" {
-				uriString := "https://kinesis.us-gov-west-1.amazonaws.com"
-
-				uri, err := url.Parse(uriString)
-				if err != nil {
-					return endpoint, fmt.Errorf("Failed to parse uri: %s", uriString)
-				}
-
-				return smithyendpoints.Endpoint{
-					URI:     *uri,
-					Headers: http.Header{},
-				}, nil
-			}
 			uriString := func() string {
 				var out strings.Builder
 				out.WriteString("https://kinesis.")
@@ -895,4 +1027,86 @@ func (r *resolver) ResolveEndpoint(
 		return endpoint, fmt.Errorf("Endpoint resolution failed. Invalid operation or environment input.")
 	}
 	return endpoint, fmt.Errorf("endpoint rule error, %s", "Invalid Configuration: Missing Region")
+}
+
+type endpointParamsBinder interface {
+	bindEndpointParams(*EndpointParameters)
+}
+
+func bindEndpointParams(ctx context.Context, input interface{}, options Options) *EndpointParameters {
+	params := &EndpointParameters{}
+
+	params.Region = bindRegion(options.Region)
+	params.UseDualStack = aws.Bool(options.EndpointOptions.UseDualStackEndpoint == aws.DualStackEndpointStateEnabled)
+	params.UseFIPS = aws.Bool(options.EndpointOptions.UseFIPSEndpoint == aws.FIPSEndpointStateEnabled)
+	params.Endpoint = options.BaseEndpoint
+
+	if b, ok := input.(endpointParamsBinder); ok {
+		b.bindEndpointParams(params)
+	}
+
+	return params
+}
+
+type resolveEndpointV2Middleware struct {
+	options Options
+}
+
+func (*resolveEndpointV2Middleware) ID() string {
+	return "ResolveEndpointV2"
+}
+
+func (m *resolveEndpointV2Middleware) HandleFinalize(ctx context.Context, in middleware.FinalizeInput, next middleware.FinalizeHandler) (
+	out middleware.FinalizeOutput, metadata middleware.Metadata, err error,
+) {
+	_, span := tracing.StartSpan(ctx, "ResolveEndpoint")
+	defer span.End()
+
+	if awsmiddleware.GetRequiresLegacyEndpoints(ctx) {
+		return next.HandleFinalize(ctx, in)
+	}
+
+	req, ok := in.Request.(*smithyhttp.Request)
+	if !ok {
+		return out, metadata, fmt.Errorf("unknown transport type %T", in.Request)
+	}
+
+	if m.options.EndpointResolverV2 == nil {
+		return out, metadata, fmt.Errorf("expected endpoint resolver to not be nil")
+	}
+
+	params := bindEndpointParams(ctx, getOperationInput(ctx), m.options)
+	endpt, err := timeOperationMetric(ctx, "client.call.resolve_endpoint_duration",
+		func() (smithyendpoints.Endpoint, error) {
+			return m.options.EndpointResolverV2.ResolveEndpoint(ctx, *params)
+		})
+	if err != nil {
+		return out, metadata, fmt.Errorf("failed to resolve service endpoint, %w", err)
+	}
+
+	span.SetProperty("client.call.resolved_endpoint", endpt.URI.String())
+
+	if endpt.URI.RawPath == "" && req.URL.RawPath != "" {
+		endpt.URI.RawPath = endpt.URI.Path
+	}
+	req.URL.Scheme = endpt.URI.Scheme
+	req.URL.Host = endpt.URI.Host
+	req.URL.Path = smithyhttp.JoinPath(endpt.URI.Path, req.URL.Path)
+	req.URL.RawPath = smithyhttp.JoinPath(endpt.URI.RawPath, req.URL.RawPath)
+	for k := range endpt.Headers {
+		req.Header.Set(k, endpt.Headers.Get(k))
+	}
+
+	rscheme := getResolvedAuthScheme(ctx)
+	if rscheme == nil {
+		return out, metadata, fmt.Errorf("no resolved auth scheme")
+	}
+
+	opts, _ := smithyauth.GetAuthOptions(&endpt.Properties)
+	for _, o := range opts {
+		rscheme.SignerProperties.SetAll(&o.SignerProperties)
+	}
+
+	span.End()
+	return next.HandleFinalize(ctx, in)
 }

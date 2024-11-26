@@ -29,7 +29,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/antonmedv/expr"
+	"github.com/expr-lang/expr"
 	"github.com/go-logr/logr"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/metrics/pkg/apis/external_metrics"
@@ -41,10 +41,13 @@ import (
 // HandleScalingModifiers is the parent function for scalingModifiers structure.
 // If the structure is defined and conditions are met, apply the formula to
 // manipulate the metrics and return them
-func HandleScalingModifiers(so *kedav1alpha1.ScaledObject, metrics []external_metrics.ExternalMetricValue, metricTriggerList map[string]string, fallbackActive bool, cacheObj *cache.ScalersCache, log logr.Logger) []external_metrics.ExternalMetricValue {
+func HandleScalingModifiers(so *kedav1alpha1.ScaledObject, metrics []external_metrics.ExternalMetricValue, metricTriggerList map[string]string, fallbackActive bool, fallbackMetrics []external_metrics.ExternalMetricValue, cacheObj *cache.ScalersCache, log logr.Logger) []external_metrics.ExternalMetricValue {
 	var err error
+	if so == nil || !so.IsUsingModifiers() {
+		return metrics
+	}
 	// dont manipulate with metrics if fallback is currently active or structure isnt defined
-	if !fallbackActive && so != nil && so.IsUsingModifiers() {
+	if !fallbackActive {
 		sm := so.Spec.Advanced.ScalingModifiers
 
 		// apply formula if defined
@@ -53,6 +56,13 @@ func HandleScalingModifiers(so *kedav1alpha1.ScaledObject, metrics []external_me
 			log.Error(err, "error applying custom scalingModifiers.Formula")
 		}
 		log.V(1).Info("returned metrics after formula is applied", "metrics", metrics)
+	} else if len(fallbackMetrics) > 0 {
+		metrics = []external_metrics.ExternalMetricValue{
+			{
+				MetricName: kedav1alpha1.CompositeMetricName,
+				Value:      fallbackMetrics[0].Value,
+				Timestamp:  fallbackMetrics[0].Timestamp,
+			}}
 	}
 	return metrics
 }
@@ -107,10 +117,11 @@ func calculateScalingModifiersFormula(list []external_metrics.ExternalMetricValu
 	return []external_metrics.ExternalMetricValue{ret}, nil
 }
 
-// AddPairTriggerAndMetric adds new pair of trigger-metric to the list for
+// GetPairTriggerAndMetric adds new pair of trigger-metric to the list for
 // scalingModifiers formula list thats needed to map the metric value to
 // trigger name. This is only ran if scalingModifiers.Formula is defined in SO.
-func AddPairTriggerAndMetric(list map[string]string, so *kedav1alpha1.ScaledObject, metric string, trigger string) (map[string]string, error) {
+func GetPairTriggerAndMetric(so *kedav1alpha1.ScaledObject, metric string, trigger string) (map[string]string, error) {
+	list := map[string]string{}
 	if so.Spec.Advanced != nil && so.Spec.Advanced.ScalingModifiers.Formula != "" {
 		if trigger == "" {
 			return list, fmt.Errorf("trigger name not given with compositeScaler for metric %s", metric)
